@@ -38,6 +38,10 @@
 #include "bthread/errno.h"
 #include "task_meta.h"
 
+#include "brpc/socket.h"
+#include <liburing.h>
+#include "uring_buffer.h"
+
 extern std::function<
     std::tuple<std::function<void()>, std::function<bool(int16_t)>, std::function<bool(bool)>>(int16_t)>
     get_tx_proc_functors;
@@ -131,8 +135,67 @@ bool TaskGroup::wait_task(bthread_t* tid) {
           return false;
         }
 
+        if (HasIoSubmissions()) {
+            int ret = io_uring_submit(io_uring_.get());
+            if (ret > 0) {
+                UpdatePendingIoCnt(ret);
+            }
+        }
+
         if (tx_processor_exec_) {
             tx_processor_exec_();
+        }
+
+        if (io_uring_init_ && HasPendingIo()) {
+            io_uring_cqe *cqe = nullptr;
+            int ret = io_uring_peek_cqe(io_uring_.get(), &cqe);
+            if (ret == 0) {
+                int processed{0};
+                unsigned head;  // head of the ring buffer, unused
+                io_uring_for_each_cqe(io_uring_.get(), head, cqe) {
+                    uint64_t data = io_uring_cqe_get_data64(cqe);
+                    // If the the lowest bit is 1, this is a fixed buffer write. 
+                    bool is_fixed_buf = (data & 1) == 1;
+                    data &= (UINT64_MAX - 1);
+                    int nw = cqe->res;
+
+                    if (is_fixed_buf) {
+                        char *ring_buf = reinterpret_cast<char *>(data);
+                        auto [ring_buf_size, sock] = RecycleRingBuffer(ring_buf);
+                        assert(sock != nullptr && ring_buf_size > 0);
+                        // Deferences the socket.
+                        brpc::SocketUniquePtr sock_uptr(sock);
+                        if (nw < 0) {
+                            // The fixed buffer returns with an error. Falls back to the old
+                            // socket write. The ring buffer, though has been recycled by 
+                            // RecycleRingBuffer(), is still valid to read, because this is 
+                            // the working thread of the task group and the buffer can only 
+                            // be re-assigned later.
+                            butil::IOBuf iobuf;
+                            iobuf.append(ring_buf, ring_buf_size);
+                            brpc::Socket::WriteOptions wopt;
+                            wopt.ignore_eovercrowded = true;
+                            sock->Write(&iobuf, &wopt);
+                        }
+                    } else {
+                        brpc::Socket *sock = reinterpret_cast<brpc::Socket *>(data);
+                        sock->IoUringCallback(nw);
+                    }
+                    
+                    ++processed;
+                }
+                io_uring_cq_advance(io_uring_.get(), processed);
+                ClearPendingIo(processed);
+            }
+        }
+
+        size_t cnt = 
+            epoll_queue_.TryDequeueBulk(epoll_batch_.begin(), epoll_batch_.size());
+        for (size_t idx = 0; idx < cnt; ++idx) {
+            brpc::SocketId sid = epoll_batch_[idx].socket_id_;
+            const bthread_attr_t *attr = 
+                (const bthread_attr_t *)epoll_batch_[idx].attr_;
+            brpc::Socket::StartInputEvent(sid, epoll_batch_[idx].events_, *attr);
         }
 
         if (_rq.pop(tid) || _bound_rq.pop(tid) || _remote_rq.pop(tid)) {
@@ -175,6 +238,35 @@ bool TaskGroup::wait_task(bthread_t* tid) {
     } while (true);
 }
 
+void TaskGroup::InitIoUring() {
+    io_uring_ = std::make_unique<io_uring>();
+    int ret = io_uring_queue_init(
+        1024,
+        io_uring_.get(),
+        IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN);
+
+    if (ret) {
+        io_uring_init_ = false;
+    }
+    else {
+        io_uring_init_ = true;
+        ret = io_uring_register_ring_fd(io_uring_.get());
+        if (ret < 0) {
+            io_uring_init_ = false;
+        }
+        else {
+            ret = io_uring_register_files_sparse(io_uring_.get(), 1024);
+            if (ret < 0) {
+                io_uring_init_ = false;
+            }
+        }
+    }
+
+    if (io_uring_init_) {
+        ring_buf_pool_ = std::make_unique<UringBufferPool>(256, io_uring_.get());
+    }
+}
+
 static double get_cumulated_cputime_from_this(void* arg) {
     return static_cast<TaskGroup*>(arg)->cumulated_cputime_ns() / 1000000000.0;
 }
@@ -195,6 +287,7 @@ void TaskGroup::run_main_task() {
             update_ext_proc_ = std::get<1>(functors);
             override_shard_heap_ = std::get<2>(functors);
             update_ext_proc_(1);
+            InitIoUring();
         }
         TaskGroup::sched_to(&dummy, tid);
         DCHECK_EQ(this, dummy);
@@ -241,6 +334,7 @@ TaskGroup::TaskGroup(TaskControl* c)
 #ifndef NDEBUG
     , _sched_recursive_guard(0)
 #endif
+    , epoll_queue_(256)
 {
     _steal_seed = butil::fast_rand();
     _steal_offset = OFFSET_TABLE[_steal_seed % ARRAY_SIZE(OFFSET_TABLE)];
@@ -255,6 +349,11 @@ TaskGroup::~TaskGroup() {
         return_stack(m->release_stack());
         return_resource(get_slot(_main_tid));
         _main_tid = 0;
+    }
+
+    if (io_uring_ != nullptr) {
+        io_uring_queue_exit(io_uring_.get());
+        io_uring_ = nullptr;
     }
 }
 
@@ -1096,4 +1195,68 @@ void print_task(std::ostream& os, bthread_t tid) {
     }
 }
 
+io_uring *TaskGroup::IoUring() const {
+    return io_uring_init_ ? io_uring_.get() : nullptr;
+}
+
+io_uring_sqe *TaskGroup::GetIoUringSqe() {
+    io_uring_sqe *sqe = io_uring_get_sqe(io_uring_.get());
+    if (sqe != nullptr) {
+        has_submissions_ = true;
+    }
+    return sqe;
+}
+
+bool TaskGroup::HasIoSubmissions() const {
+    return has_submissions_;
+}
+
+void TaskGroup::UpdatePendingIoCnt(uint32_t cnt) {
+    pending_io_cnt_ += cnt;
+    has_submissions_ = false;
+}
+
+bool TaskGroup::HasPendingIo() const {
+    return pending_io_cnt_ > 0;
+}
+
+void TaskGroup::ClearPendingIo(uint32_t cnt) {
+    if (pending_io_cnt_ >= cnt) {
+        pending_io_cnt_ -= cnt;
+    } else {
+        pending_io_cnt_ = 0;
+    }
+}
+
+std::pair<char *, uint16_t> TaskGroup::GetRingBuffer() {
+    if (ring_buf_pool_ != nullptr) {
+        return ring_buf_pool_->Get();
+    } else {
+        return {nullptr, UINT16_MAX};
+    }
+}
+
+std::pair<uint16_t, brpc::Socket*> TaskGroup::RecycleRingBuffer(const char *ring_buf) {
+    auto it = ring_buf_in_use_.find(ring_buf);
+    std::pair<uint16_t, brpc::Socket*> pair{UINT16_MAX, nullptr};
+    if (it != ring_buf_in_use_.end()) {
+        pair = it->second;
+        ring_buf_in_use_.erase(it);
+    }
+    ring_buf_pool_->Recycle(ring_buf);
+    return pair;
+}
+
+void TaskGroup::UseRingBuffer(const char *ring_buf, uint16_t buf_size, 
+                              brpc::Socket *sock) {
+    auto it = ring_buf_in_use_.try_emplace(ring_buf, buf_size, sock);
+    if (!it.second) {
+        LOG(FATAL) << "IO uring buffer has been used, task group: " << group_id_ 
+                   << ", buffer: " << ring_buf << ", socket: " << *sock; 
+    }
+}
+
+bool TaskGroup::EpollEnqueue(uint64_t sock, uint32_t events, const void *attr) {
+    return epoll_queue_.TryEnqueue(EpollEntry(sock, events, attr));
+}
 }  // namespace bthread

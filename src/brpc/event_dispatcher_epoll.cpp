@@ -21,9 +21,12 @@
 #endif
 
 #include "bthread/task_control.h"
+#include "bthread/task_group.h"
+#include <unordered_map>
 
 extern "C" {
 extern void bthread_flush();
+extern bthread::TaskControl* bthread_get_task_control();
 };
 
 namespace bthread {
@@ -244,6 +247,8 @@ void* EventDispatcher::HandleEpollOut(void *arg)
 }
 
 void EventDispatcher::Run() {
+    std::unordered_map<uint64_t, bthread::TaskGroup *> sock_group;
+
     while (!_stop) {
         epoll_event e[32];
 #ifdef BRPC_ADDITIONAL_EPOLL
@@ -275,6 +280,27 @@ void EventDispatcher::Run() {
                 || (e[i].events & has_epollrdhup)
 #endif
                 ) {
+                bthread::TaskControl *cntl = bthread_get_task_control();
+                if (cntl != nullptr) {
+                    uint64_t sock = e[i].data.u64;
+                    bthread::TaskGroup *g = nullptr;
+                    auto it = sock_group.find(sock);
+                    if (it != sock_group.end()) {
+                        g = it->second;
+                    } else {
+                        auto [gr, g_idx] = cntl->SocketToGroup(sock);
+                        g = gr;
+                        sock_group.try_emplace(sock, g);
+                    }
+
+                    if (g != nullptr) {
+                        bool success = g->EpollEnqueue(
+                            sock, e[i].events, &_consumer_thread_attr);
+                        if (success) {
+                            continue;
+                        }
+                    }
+                }
                 // We don't care about the return value.
                 Socket::StartInputEvent(e[i].data.u64, e[i].events,
                                         _consumer_thread_attr);

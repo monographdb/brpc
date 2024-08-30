@@ -84,6 +84,7 @@ void* TaskControl::worker_thread(void* arg) {
         g->tx_processor_exec_ = functors.first;
         g->update_ext_proc_ = functors.second;
         (g->update_ext_proc_)(1);
+        g->InitIoUring();
     }
 
     butil::PlatformThread::SetName(worker_thread_name.c_str());
@@ -263,6 +264,12 @@ TaskGroup* TaskControl::select_group(int group_id) {
     }
     LOG(ERROR) << "Selected group: " << group_id << " out of range, group number: " << ngroup;
     return NULL;
+}
+
+std::pair<TaskGroup*, int> TaskControl::SocketToGroup(uint64_t sock_id) {
+    const size_t ngroup = _ngroup.load(butil::memory_order_relaxed);
+    int g_idx = sock_id % ngroup;
+    return {_groups[g_idx], g_idx};
 }
 
 extern int stop_and_join_epoll_threads();

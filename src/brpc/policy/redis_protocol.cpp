@@ -174,8 +174,12 @@ ParseResult ParseRedisMessage(butil::IOBuf* source, Socket* socket,
             cur_group->update_ext_proc_ = std::get<1>(functors);
             cur_group->override_shard_heap_ = std::get<2>(functors);
             cur_group->update_ext_proc_(1);
+            cur_group->InitIoUring();
             cur_task->SetBoundGroup(cur_group);
         }
+
+        auto [ring_buf, ring_buf_idx] = cur_group->GetRingBuffer();
+        appender.set_ring_buffer(ring_buf);
 
         err = ctx->parser.Consume(*source, &current_args, &ctx->arena);
         if (err != PARSE_OK) {
@@ -201,9 +205,32 @@ ParseResult ParseRedisMessage(butil::IOBuf* source, Socket* socket,
         }
 
         cur_task->SetBoundGroup(NULL);
+        uint16_t ring_buf_size = appender.ring_buffer_size();
 
         butil::IOBuf sendbuf;
         appender.move_to(sendbuf);
+        if (ring_buf_size > 0) {
+            assert(sendbuf.empty());
+            int ret = socket->RingBufferWrite(ring_buf, ring_buf_idx,
+                                              ring_buf_size);
+            if (ret != 0) {
+                // If the fixed buffer write is not submitted,
+                // falls back to the old socket write.
+                sendbuf.append(ring_buf, ring_buf_size);
+                cur_group->RecycleRingBuffer(ring_buf);
+            } else {
+                // The fixed buffer write is submitted successfully.
+                // The ring buffer will be recycled after the IO uring
+                // finishes the write request.
+            }
+        } else if (ring_buf != nullptr) {
+            cur_group->RecycleRingBuffer(ring_buf);
+        }
+
+        if (ring_buf_size == 0) {
+            LOG(INFO) << "Redis socket write not using fixed buffer.";
+        }
+
         if (!sendbuf.empty()) {
             Socket::WriteOptions wopt;
             wopt.ignore_eovercrowded = true;

@@ -31,6 +31,16 @@
 #include "butil/resource_pool.h"                    // ResourceId
 #include "bthread/parking_lot.h"
 
+#include "epoll_queue.h"
+
+struct io_uring;
+struct io_uring_sqe;
+class UringBufferPool;
+
+namespace brpc {
+class Socket;
+}
+
 namespace bthread {
 
 // For exiting a bthread.
@@ -200,6 +210,18 @@ public:
     std::function<bool(int16_t)> update_ext_proc_{nullptr};
     std::function<bool(bool)> override_shard_heap_{nullptr};
 
+    void InitIoUring();
+    io_uring *IoUring() const;
+    io_uring_sqe *GetIoUringSqe();
+    bool HasIoSubmissions() const;
+    void UpdatePendingIoCnt(uint32_t cnt);
+    bool HasPendingIo() const;
+    void ClearPendingIo(uint32_t cnt);
+    std::pair<char *, uint16_t> GetRingBuffer();
+    std::pair<uint16_t, brpc::Socket*> RecycleRingBuffer(const char *ring_buf);
+    void UseRingBuffer(const char *ring_buf, uint16_t buf_size, brpc::Socket *sock);
+    bool EpollEnqueue(uint64_t sock, uint32_t events, const void *attr);
+
   private:
     friend class TaskControl;
 
@@ -278,6 +300,17 @@ public:
     std::atomic<int> _remote_nsignaled{0};
 
     int _sched_recursive_guard;
+
+    std::unique_ptr<io_uring> io_uring_;
+    uint32_t pending_io_cnt_{0};
+    bool has_submissions_{false};
+    bool io_uring_init_{false};
+    std::unique_ptr<UringBufferPool> ring_buf_pool_{nullptr};
+    std::unordered_map<const char *, std::pair<uint16_t, brpc::Socket*>> 
+        ring_buf_in_use_;
+
+    eloq::SpscQueue<EpollEntry> epoll_queue_;
+    std::array<EpollEntry, 128> epoll_batch_;
 };
 
 }  // namespace bthread

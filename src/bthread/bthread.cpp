@@ -463,5 +463,9 @@ int bthread_list_join(bthread_list_t* list) {
     static_cast<bthread::TidList*>(list->impl)->apply(bthread::TidJoiner());
     return 0;
 }
+
+bthread::TaskControl* bthread_get_task_control() {
+    return bthread::get_task_control();
+}
     
 }  // extern "C"

@@ -39,6 +39,10 @@
 #include "brpc/socket_message.h"          // SocketMessagePtr
 #include "bvar/bvar.h"
 
+namespace bthread {
+class TaskGroup;
+}
+
 namespace brpc {
 namespace policy {
 class ConsistentHashingLoadBalancer;
@@ -305,6 +309,7 @@ public:
             , ignore_eovercrowded(false), write_in_background(false) {}
     };
     int Write(butil::IOBuf *msg, const WriteOptions* options = NULL);
+    int RingBufferWrite(const char *ring_buf, uint16_t ring_buf_idx, uint16_t ring_buf_size);
 
     // Write an user-defined message. `msg' is released when Write() is
     // successful and *may* remain unchanged otherwise.
@@ -577,6 +582,7 @@ public:
 
     bthread_keytable_pool_t* keytable_pool() const { return _keytable_pool; }
 
+    void IoUringCallback(int nw);
 private:
     DISALLOW_COPY_AND_ASSIGN(Socket);
 
@@ -915,6 +921,9 @@ private:
     // Refer to `SocketKeepaliveOptions' for details.
     // non-NULL means that keepalive is on.
     std::shared_ptr<SocketKeepaliveOptions> _keepalive_options;
+
+    WriteRequest *io_uring_write_req_{nullptr};
+    std::vector<struct iovec> iovecs_;
 };
 
 } // namespace brpc

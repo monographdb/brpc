@@ -53,10 +53,15 @@
 #if defined(OS_MACOSX)
 #include <sys/event.h>
 #endif
+#include "bthread/task_group.h"
+
+#include <liburing.h>
+#include <boost/stacktrace.hpp>
 
 namespace bthread {
 size_t __attribute__((weak))
 get_sizes(const bthread_id_list_t* list, size_t* cnt, size_t n);
+extern BAIDU_THREAD_LOCAL TaskGroup* tls_task_group;
 }
 
 
@@ -351,7 +356,7 @@ struct BAIDU_CACHELINE_ALIGNMENT Socket::WriteRequest {
 
     // Register pipelined_count and user_message
     void Setup(Socket* s);
-    
+
 private:
     uint64_t _pc_and_udmsg;
 };
@@ -1613,6 +1618,46 @@ int Socket::Write(butil::IOBuf* data, const WriteOptions* options_in) {
     return StartWrite(req, opt);
 }
 
+int Socket::RingBufferWrite(const char *ring_buf, uint16_t ring_buf_idx,
+                            uint16_t ring_buf_size) {
+    bthread::TaskGroup *g =
+        BAIDU_GET_VOLATILE_THREAD_LOCAL(bthread::tls_task_group);
+    if (g == nullptr || g->tx_processor_exec_ == nullptr) {
+        return -1;
+    }
+    struct io_uring *io_ring = g->IoUring();
+    if (io_ring == nullptr) {
+        return -1;
+    }
+
+    assert(ring_buf != nullptr && ring_buf_size > 0);
+    struct io_uring_sqe *sqe = g->GetIoUringSqe();
+    if (sqe == nullptr) {
+        return -1;
+    }
+
+    // ReAddress() increments references of the socket (same as
+    // KeepWrite in background) so that the socket is still
+    // available when the async IO finishes and the write request
+    // is post-processed. The socket needs to be deferenced when
+    // post-processing the write request.
+    SocketUniquePtr ptr_for_keep_write;
+    ReAddress(&ptr_for_keep_write);
+    (void) ptr_for_keep_write.release();
+
+    io_uring_prep_write_fixed(
+        sqe, fd(), ring_buf, ring_buf_size, 0, ring_buf_idx);
+
+    uint64_t data = reinterpret_cast<uint64_t>(ring_buf);
+    // Memory addresses are even numbers. We use the lowest bit to represent
+    // if this is an IO uring fixed buffer write.
+    assert((data & 1) == 0);
+    data |= 1;
+    io_uring_sqe_set_data64(sqe, data);
+    g->UseRingBuffer(ring_buf, ring_buf_size, this);
+    return 0;
+}
+
 int Socket::Write(SocketMessagePtr<>& msg, const WriteOptions* options_in) {
     WriteOptions opt;
     if (options_in) {
@@ -1707,6 +1752,31 @@ int Socket::StartWrite(WriteRequest* req, const WriteOptions& opt) {
 #else
         {
 #endif
+            bthread::TaskGroup *g =
+                BAIDU_GET_VOLATILE_THREAD_LOCAL(bthread::tls_task_group);
+            struct io_uring *io_ring = nullptr;
+            if (g != nullptr && g->tx_processor_exec_ != nullptr) {
+                io_ring = g->IoUring();
+            }
+            if (io_ring != nullptr && !req->data.empty()) {
+                struct io_uring_sqe *sqe = g->GetIoUringSqe();
+                if (sqe != nullptr) {
+                    // ReAddress() increments references of the socket (same as
+                    // KeepWrite in background) so that the socket is still
+                    // available when the async IO finishes and the write request
+                    // is post-processed. The socket needs to be deferenced when
+                    // post-processing the write request.
+                    ReAddress(&ptr_for_keep_write);
+                    req->socket = ptr_for_keep_write.release();
+                    io_uring_write_req_ = req;
+                    req->data.io_uring_pcut_into_file_descriptor(fd(), io_ring,
+                                                                 sqe, &iovecs_);
+                    uint64_t data = reinterpret_cast<uint64_t>(this);
+                    io_uring_sqe_set_data64(sqe, data);
+                    return 0;
+                }
+            }
+
             nw = req->data.cut_into_file_descriptor(fd());
         }
     }
@@ -2906,6 +2976,56 @@ std::string Socket::description() const {
     }
     butil::string_appendf(&result, "} (0x%p)", this);
     return result;
+}
+
+void Socket::IoUringCallback(int nw) {
+    // Deferences the socket if the write request finishes.
+    SocketUniquePtr sock(this);
+
+    WriteRequest *req = io_uring_write_req_;
+    assert(req->socket == this);
+    if (nw > 0) {
+        req->data.pop_front(nw);
+    }
+
+    int saved_errno = errno;
+    bthread_t th;
+
+    if (nw < 0) {
+        // RTMP may return EOVERCROWDED
+        if (errno != EAGAIN && errno != EOVERCROWDED) {
+            saved_errno = errno;
+            // EPIPE is common in pooled connections + backup requests.
+            PLOG_IF(WARNING, errno != EPIPE) << "Fail to write into " << *this;
+            SetFailed(saved_errno, "Fail to write into %s: %s",
+                      description().c_str(), berror(saved_errno));
+            goto CALLBACK_FAIL_TO_WRITE;
+        }
+    } else {
+        AddOutputBytes(nw);
+    }
+    if (IsWriteComplete(req, true, NULL)) {
+        ReturnSuccessfulWriteRequest(req);
+        return;
+    }
+
+    // KeepWrite will continue to reference the socket. So, releases the unique
+    // pointer which does not decrement the reference count.
+    (void) sock.release();
+    if (bthread_start_background(&th, &BTHREAD_ATTR_NORMAL,
+                                 KeepWrite, req) != 0) {
+        LOG(FATAL) << "Fail to start KeepWrite";
+        KeepWrite(req);
+    }
+    return;
+
+CALLBACK_FAIL_TO_WRITE:
+    // `SetFailed' before `ReturnFailedWriteRequest' (which will calls
+    // `on_reset' callback inside the id object) so that we immediately
+    // know this socket has failed inside the `on_reset' callback
+    ReleaseAllFailedWriteRequests(req);
+    errno = saved_errno;
+    return;
 }
 
 SocketSSLContext::SocketSSLContext()

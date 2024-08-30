@@ -203,6 +203,12 @@ if(NOT PROTOC_LIB)
     message(FATAL_ERROR "Fail to find protoc lib")
 endif()
 
+find_path(URING_INCLUDE_PATH NAMES liburing.h)
+find_library(URING_LIB NAMES uring)
+if ((NOT URING_INCLUDE_PATH) OR (NOT URING_LIB))
+    message(FATAL_ERROR "Fail to find liburing")
+endif()
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(OPENSSL_ROOT_DIR
         "/usr/local/opt/openssl"    # Homebrew installed OpenSSL
@@ -250,6 +256,8 @@ if(WITH_SNAPPY)
     set(DYNAMIC_LIB ${DYNAMIC_LIB} ${SNAPPY_LIB})
     set(BRPC_PRIVATE_LIBS "${BRPC_PRIVATE_LIBS} -lsnappy")
 endif()
+
+set(DYNAMIC_LIB ${DYNAMIC_LIB} ${URING_LIB})
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(DYNAMIC_LIB ${DYNAMIC_LIB} rt)

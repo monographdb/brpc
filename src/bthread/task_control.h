@@ -81,6 +81,8 @@ public:
     // Select task group.
     TaskGroup* select_group(int group_id);
 
+    std::pair<TaskGroup*, int> SocketToGroup(uint64_t sock_id);
+
 private:
     // Add/Remove a TaskGroup.
     // Returns 0 on success, -1 otherwise.
