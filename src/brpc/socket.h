@@ -39,6 +39,10 @@
 #include "brpc/socket_message.h"          // SocketMessagePtr
 #include "bvar/bvar.h"
 
+class SocketRunner;
+class InboundRingListener;
+struct InboundRingBuf;
+
 namespace bthread {
 class TaskGroup;
 }
@@ -222,6 +226,31 @@ struct SocketOptions {
     // Socket keepalive related options.
     // Refer to `SocketKeepaliveOptions' for details.
     std::shared_ptr<SocketKeepaliveOptions> keepalive_options;
+    size_t bound_gid_;
+};
+
+struct SocketInboundBuf {
+  SocketInboundBuf() = delete;
+  SocketInboundBuf(int32_t size, uint16_t bid, bool rearm = false)
+      : bytes_(size), buf_id_(bid), need_rearm_(rearm) {}
+
+  SocketInboundBuf(SocketInboundBuf &&rhs)
+      : bytes_(rhs.bytes_), buf_id_(rhs.buf_id_), need_rearm_(rhs.need_rearm_) {
+  }
+
+  SocketInboundBuf &operator=(SocketInboundBuf &&rhs) {
+    if (this == &rhs) {
+      return *this;
+    }
+    bytes_ = rhs.bytes_;
+    buf_id_ = rhs.buf_id_;
+    need_rearm_ = rhs.need_rearm_;
+    return *this;
+  }
+
+  int32_t bytes_{0};
+  uint16_t buf_id_{UINT16_MAX};
+  bool need_rearm_{false};
 };
 
 // Abstractions on reading from and writing into file descriptors.
@@ -437,6 +466,8 @@ public:
     // This function does not block caller.
     static int StartInputEvent(SocketId id, uint32_t events,
                                const bthread_attr_t& thread_attr);
+    static void SocketResume(Socket *sock, InboundRingBuf &rbuf,
+                             bthread::TaskGroup *group);
 
     static const int PROGRESS_INIT = 1;
     bool MoreReadEvents(int* progress);
@@ -582,7 +613,8 @@ public:
 
     bthread_keytable_pool_t* keytable_pool() const { return _keytable_pool; }
 
-    void IoUringCallback(int nw);
+    void IoRingWriteCallback(int nw);
+    void ResumeRunner();
 private:
     DISALLOW_COPY_AND_ASSIGN(Socket);
 
@@ -646,7 +678,7 @@ friend void DereferenceSocket(Socket*);
     //   -1 - Failed to connect to remote side
     int ConnectIfNot(const timespec* abstime, WriteRequest* req);
 
-    int ResetFileDescriptor(int fd);
+    int ResetFileDescriptor(int fd, size_t bound_gid = 0);
 
     void EnableKeepaliveIfNeeded(int fd);
 
@@ -657,6 +689,9 @@ friend void DereferenceSocket(Socket*);
     void Revive();
 
     static void* ProcessEvent(void*);
+    static void *SocketRun(void *);
+    static void *SocketProcess(void *);
+    static void *SocketRegister(void *);
 
     static void* KeepWrite(void*);
 
@@ -924,6 +959,16 @@ private:
 
     WriteRequest *io_uring_write_req_{nullptr};
     std::vector<struct iovec> iovecs_;
+
+    std::unique_ptr<SocketRunner> runner_{nullptr};
+    std::vector<SocketInboundBuf> in_bufs_;
+    bthread::TaskGroup *bound_g_{nullptr};
+    int inbound_nw_{INT32_MAX};
+    uint16_t recv_num_{0};
+    int reg_fd_idx_{-1};
+    int reg_fd_{-1};
+
+    friend class ::InboundRingListener;
 };
 
 } // namespace brpc

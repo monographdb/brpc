@@ -280,27 +280,6 @@ void EventDispatcher::Run() {
                 || (e[i].events & has_epollrdhup)
 #endif
                 ) {
-                bthread::TaskControl *cntl = bthread_get_task_control();
-                if (cntl != nullptr) {
-                    uint64_t sock = e[i].data.u64;
-                    bthread::TaskGroup *g = nullptr;
-                    auto it = sock_group.find(sock);
-                    if (it != sock_group.end()) {
-                        g = it->second;
-                    } else {
-                        auto [gr, g_idx] = cntl->SocketToGroup(sock);
-                        g = gr;
-                        sock_group.try_emplace(sock, g);
-                    }
-
-                    if (g != nullptr) {
-                        bool success = g->EpollEnqueue(
-                            sock, e[i].events, &_consumer_thread_attr);
-                        if (success) {
-                            continue;
-                        }
-                    }
-                }
                 // We don't care about the return value.
                 Socket::StartInputEvent(e[i].data.u64, e[i].events,
                                         _consumer_thread_attr);

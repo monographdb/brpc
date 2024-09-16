@@ -41,10 +41,17 @@
 #include "brpc/socket.h"
 #include <liburing.h>
 #include "uring_buffer.h"
+#include "brpc/socket_runner.h"
+#include "bthread/inbound_ring_listener.h"
 
 extern std::function<
     std::tuple<std::function<void()>, std::function<bool(int16_t)>, std::function<bool(bool)>>(int16_t)>
     get_tx_proc_functors;
+
+extern "C" {
+extern void bthread_flush();
+}
+
 namespace bthread {
 
 static const bthread_attr_t BTHREAD_ATTR_TASKGROUP = {
@@ -142,6 +149,10 @@ bool TaskGroup::wait_task(bthread_t* tid) {
             }
         }
 
+        if (ring_listener_ != nullptr) {
+            ring_listener_->SubmitAll();
+        }
+
         if (tx_processor_exec_) {
             tx_processor_exec_();
         }
@@ -154,32 +165,34 @@ bool TaskGroup::wait_task(bthread_t* tid) {
                 unsigned head;  // head of the ring buffer, unused
                 io_uring_for_each_cqe(io_uring_.get(), head, cqe) {
                     uint64_t data = io_uring_cqe_get_data64(cqe);
-                    // If the the lowest bit is 1, this is a fixed buffer write. 
-                    bool is_fixed_buf = (data & 1) == 1;
-                    data &= (UINT64_MAX - 1);
+                    // The high 48 bits represent the socket pointer
+                    brpc::Socket *sock = reinterpret_cast<brpc::Socket*>(data >> 16);
+                    // The lowest 2 bits encode the IO type.
+                    uint8_t io_type = data & 0x03;
                     int nw = cqe->res;
 
-                    if (is_fixed_buf) {
-                        char *ring_buf = reinterpret_cast<char *>(data);
-                        auto [ring_buf_size, sock] = RecycleRingBuffer(ring_buf);
-                        assert(sock != nullptr && ring_buf_size > 0);
+                    if (io_type == 0) {
+                        // Non-fixed buffer write
+                        sock->IoRingWriteCallback(nw);
+                    } else if (io_type == 1) {
+                        // Fixed-buffer write
+                        uint16_t buf_idx = (data & UINT16_MAX) >> 2;
+                        std::string_view buf = RecycleRingBuffer(buf_idx);
                         // Deferences the socket.
                         brpc::SocketUniquePtr sock_uptr(sock);
                         if (nw < 0) {
-                            // The fixed buffer returns with an error. Falls back to the old
-                            // socket write. The ring buffer, though has been recycled by 
-                            // RecycleRingBuffer(), is still valid to read, because this is 
-                            // the working thread of the task group and the buffer can only 
-                            // be re-assigned later.
-                            butil::IOBuf iobuf;
-                            iobuf.append(ring_buf, ring_buf_size);
-                            brpc::Socket::WriteOptions wopt;
-                            wopt.ignore_eovercrowded = true;
-                            sock->Write(&iobuf, &wopt);
+                          // The fixed buffer returns with an error. Falls back
+                          // to the old socket write. The ring buffer, though
+                          // has been recycled by RecycleRingBuffer(), is still
+                          // valid to read, because this is the working thread
+                          // of the task group and the buffer can only be
+                          // re-assigned later.
+                          butil::IOBuf iobuf;
+                          iobuf.append(buf.data(), buf.size());
+                          brpc::Socket::WriteOptions wopt;
+                          wopt.ignore_eovercrowded = true;
+                          sock->Write(&iobuf, &wopt);
                         }
-                    } else {
-                        brpc::Socket *sock = reinterpret_cast<brpc::Socket *>(data);
-                        sock->IoUringCallback(nw);
                     }
                     
                     ++processed;
@@ -189,13 +202,14 @@ bool TaskGroup::wait_task(bthread_t* tid) {
             }
         }
 
-        size_t cnt = 
-            epoll_queue_.TryDequeueBulk(epoll_batch_.begin(), epoll_batch_.size());
+        ring_listener_->ExtPollRecv();
+
+        size_t cnt = inbound_queue_.TryDequeueBulk(inbound_batch_.begin(),
+                                                   inbound_batch_.size());
         for (size_t idx = 0; idx < cnt; ++idx) {
-            brpc::SocketId sid = epoll_batch_[idx].socket_id_;
-            const bthread_attr_t *attr = 
-                (const bthread_attr_t *)epoll_batch_[idx].attr_;
-            brpc::Socket::StartInputEvent(sid, epoll_batch_[idx].events_, *attr);
+          InboundRingBuf &rbuf = inbound_batch_[idx];
+          brpc::Socket *sock = rbuf.sock_;
+          brpc::Socket::SocketResume(sock, rbuf, this);
         }
 
         if (_rq.pop(tid) || _bound_rq.pop(tid) || _remote_rq.pop(tid)) {
@@ -219,6 +233,7 @@ bool TaskGroup::wait_task(bthread_t* tid) {
                 poll_start_ms = FLAGS_worker_polling_time_ms > 0 ? butil::cpuwide_time_ms() : 0;
                 continue;
             }
+            ring_listener_->ExtWakeup();
             _pl->wait(_last_pl_state);
             poll_start_ms = FLAGS_worker_polling_time_ms > 0 ? butil::cpuwide_time_ms() : 0;
             if (update_ext_proc_) {
@@ -272,9 +287,9 @@ static double get_cumulated_cputime_from_this(void* arg) {
 }
 
 void TaskGroup::run_main_task() {
-    bvar::PassiveStatus<double> cumulated_cputime(
-        get_cumulated_cputime_from_this, this);
-    std::unique_ptr<bvar::PerSecond<bvar::PassiveStatus<double> > > usage_bvar;
+    // bvar::PassiveStatus<double> cumulated_cputime(
+    //     get_cumulated_cputime_from_this, this);
+    // std::unique_ptr<bvar::PerSecond<bvar::PassiveStatus<double> > > usage_bvar;
 
     TaskGroup* dummy = this;
     bthread_t tid;
@@ -295,18 +310,18 @@ void TaskGroup::run_main_task() {
         if (_cur_meta->tid != _main_tid) {
             TaskGroup::task_runner(1/*skip remained*/);
         }
-        if (FLAGS_show_per_worker_usage_in_vars && !usage_bvar) {
-            char name[32];
-#if defined(OS_MACOSX)
-            snprintf(name, sizeof(name), "bthread_worker_usage_%" PRIu64,
-                     pthread_numeric_id());
-#else
-            snprintf(name, sizeof(name), "bthread_worker_usage_%ld",
-                     (long)syscall(SYS_gettid));
-#endif
-            usage_bvar.reset(new bvar::PerSecond<bvar::PassiveStatus<double> >
-                             (name, &cumulated_cputime, 1));
-        }
+//         if (FLAGS_show_per_worker_usage_in_vars && !usage_bvar) {
+//             char name[32];
+// #if defined(OS_MACOSX)
+//             snprintf(name, sizeof(name), "bthread_worker_usage_%" PRIu64,
+//                      pthread_numeric_id());
+// #else
+//             snprintf(name, sizeof(name), "bthread_worker_usage_%ld",
+//                      (long)syscall(SYS_gettid));
+// #endif
+//             usage_bvar.reset(new bvar::PerSecond<bvar::PassiveStatus<double> >
+//                              (name, &cumulated_cputime, 1));
+//         }
     }
     // Don't forget to add elapse of last wait_task.
     current_task()->stat.cputime_ns += butil::cpuwide_time_ns() - _last_run_ns;
@@ -334,7 +349,7 @@ TaskGroup::TaskGroup(TaskControl* c)
 #ifndef NDEBUG
     , _sched_recursive_guard(0)
 #endif
-    , epoll_queue_(256)
+    , inbound_queue_(1024)
 {
     _steal_seed = butil::fast_rand();
     _steal_offset = OFFSET_TABLE[_steal_seed % ARRAY_SIZE(OFFSET_TABLE)];
@@ -393,6 +408,14 @@ int TaskGroup::init(size_t runqueue_capacity) {
     _main_tid = m->tid;
     _main_stack = stk;
     _last_run_ns = butil::cpuwide_time_ns();
+
+    ring_listener_ = std::make_unique<InboundRingListener>(this);
+    int ret = ring_listener_->Init();
+    if (ret) {
+      LOG(ERROR) << "Failed to initialize the IO uring listener.";
+      ring_listener_ = nullptr;
+    }
+
     return 0;
 }
 
@@ -567,7 +590,8 @@ template <bool REMOTE>
 int TaskGroup::start_background(bthread_t* __restrict th,
                                 const bthread_attr_t* __restrict attr,
                                 void * (*fn)(void*),
-                                void* __restrict arg) {
+                                void* __restrict arg,
+                                bool is_bound) {
     if (__builtin_expect(!fn, 0)) {
         return EINVAL;
     }
@@ -600,7 +624,11 @@ int TaskGroup::start_background(bthread_t* __restrict th,
     }
     _control->_nbthreads << 1;
     if (REMOTE) {
-        ready_to_run_remote(m->tid, (using_attr.flags & BTHREAD_NOSIGNAL));
+        if (is_bound) {
+            ready_to_run_bound(m->tid);
+        } else {
+            ready_to_run_remote(m->tid, (using_attr.flags & BTHREAD_NOSIGNAL));
+        }
     } else {
         ready_to_run(m->tid, (using_attr.flags & BTHREAD_NOSIGNAL));
     }
@@ -612,12 +640,14 @@ template int
 TaskGroup::start_background<true>(bthread_t* __restrict th,
                                   const bthread_attr_t* __restrict attr,
                                   void * (*fn)(void*),
-                                  void* __restrict arg);
+                                  void* __restrict arg,
+                                  bool is_bound = false);
 template int
 TaskGroup::start_background<false>(bthread_t* __restrict th,
                                    const bthread_attr_t* __restrict attr,
                                    void * (*fn)(void*),
-                                   void* __restrict arg);
+                                   void* __restrict arg,
+                                   bool is_bound = false);
 
 int TaskGroup::join(bthread_t tid, void** return_value) {
     if (__builtin_expect(!tid, 0)) {  // tid of bthread is never 0.
@@ -1196,67 +1226,106 @@ void print_task(std::ostream& os, bthread_t tid) {
 }
 
 io_uring *TaskGroup::IoUring() const {
-    return io_uring_init_ ? io_uring_.get() : nullptr;
+  return io_uring_init_ ? io_uring_.get() : nullptr;
 }
 
 io_uring_sqe *TaskGroup::GetIoUringSqe() {
-    io_uring_sqe *sqe = io_uring_get_sqe(io_uring_.get());
-    if (sqe != nullptr) {
-        has_submissions_ = true;
-    }
-    return sqe;
+  io_uring_sqe *sqe = io_uring_get_sqe(io_uring_.get());
+  if (sqe != nullptr) {
+    has_submissions_ = true;
+  }
+  return sqe;
 }
 
-bool TaskGroup::HasIoSubmissions() const {
-    return has_submissions_;
-}
+bool TaskGroup::HasIoSubmissions() const { return has_submissions_; }
 
 void TaskGroup::UpdatePendingIoCnt(uint32_t cnt) {
-    pending_io_cnt_ += cnt;
-    has_submissions_ = false;
+  pending_io_cnt_ += cnt;
+  has_submissions_ = false;
 }
 
-bool TaskGroup::HasPendingIo() const {
-    return pending_io_cnt_ > 0;
-}
+bool TaskGroup::HasPendingIo() const { return pending_io_cnt_ > 0; }
 
 void TaskGroup::ClearPendingIo(uint32_t cnt) {
-    if (pending_io_cnt_ >= cnt) {
-        pending_io_cnt_ -= cnt;
-    } else {
-        pending_io_cnt_ = 0;
-    }
+  if (pending_io_cnt_ >= cnt) {
+    pending_io_cnt_ -= cnt;
+  } else {
+    pending_io_cnt_ = 0;
+  }
 }
 
 std::pair<char *, uint16_t> TaskGroup::GetRingBuffer() {
-    if (ring_buf_pool_ != nullptr) {
-        return ring_buf_pool_->Get();
-    } else {
-        return {nullptr, UINT16_MAX};
-    }
+  if (ring_buf_pool_ != nullptr) {
+    return ring_buf_pool_->Get();
+  } else {
+    return {nullptr, UINT16_MAX};
+  }
 }
 
-std::pair<uint16_t, brpc::Socket*> TaskGroup::RecycleRingBuffer(const char *ring_buf) {
-    auto it = ring_buf_in_use_.find(ring_buf);
-    std::pair<uint16_t, brpc::Socket*> pair{UINT16_MAX, nullptr};
-    if (it != ring_buf_in_use_.end()) {
-        pair = it->second;
-        ring_buf_in_use_.erase(it);
-    }
-    ring_buf_pool_->Recycle(ring_buf);
-    return pair;
+std::string_view TaskGroup::RecycleRingBuffer(uint16_t buf_idx) {
+  auto it = fixed_write_buf_in_use_.find(buf_idx);
+  std::string_view buf{nullptr, 0};
+  if (it != fixed_write_buf_in_use_.end()) {
+    buf = it->second;
+    fixed_write_buf_in_use_.erase(it);
+  }
+  ring_buf_pool_->Recycle(buf_idx);
+  return buf;
 }
 
-void TaskGroup::UseRingBuffer(const char *ring_buf, uint16_t buf_size, 
-                              brpc::Socket *sock) {
-    auto it = ring_buf_in_use_.try_emplace(ring_buf, buf_size, sock);
-    if (!it.second) {
-        LOG(FATAL) << "IO uring buffer has been used, task group: " << group_id_ 
-                   << ", buffer: " << ring_buf << ", socket: " << *sock; 
-    }
+void TaskGroup::UseRingBuffer(uint16_t buf_idx, const char *buf,
+                              size_t buf_size) {
+  auto it = fixed_write_buf_in_use_.try_emplace(buf_idx, buf, buf_size);
+  if (!it.second) {
+    LOG(FATAL) << "IO uring buffer has been used, task group: " << group_id_
+               << ", buffer index: " << buf_idx;
+  }
 }
 
-bool TaskGroup::EpollEnqueue(uint64_t sock, uint32_t events, const void *attr) {
-    return epoll_queue_.TryEnqueue(EpollEntry(sock, events, attr));
+void TaskGroup::AddSocketRunner(SocketRunner *runner) {
+  std::unique_lock<bthread::Mutex> lk(runner_mux_);
+  sock_runners_.emplace(runner);
+}
+
+void TaskGroup::EndSocketRunners() {
+  std::unique_lock<bthread::Mutex> lk(runner_mux_);
+  for (auto &s_run : sock_runners_) {
+    s_run->Close();
+    s_run->Notify();
+  }
+}
+
+void TaskGroup::EndSocketRunner(SocketRunner *runner) {
+  std::unique_lock<bthread::Mutex> lk(runner_mux_);
+  sock_runners_.erase(runner);
+}
+
+int TaskGroup::RegisterSocket(brpc::Socket *sock) {
+  return ring_listener_->Register(sock);
+}
+
+void TaskGroup::UnregisterSocket(int fd) {
+  ring_listener_->Unregister(fd);
+}
+
+void TaskGroup::RearmSocket(brpc::Socket *sock) {
+  ring_listener_->SubmitRecv(sock);
+}
+
+const char *TaskGroup::GetInboundRingBuf(uint16_t buf_id) {
+  return ring_listener_->GetRingBuf(buf_id);
+}
+
+bool TaskGroup::EnqueueInboundRingBuf(brpc::Socket *sock, int32_t bytes,
+                                      uint16_t bid, bool rearm) {
+  bool success =
+      inbound_queue_.TryEnqueue(InboundRingBuf(sock, bytes, bid, rearm));
+  _remote_num_nosignal.fetch_add(1, std::memory_order_relaxed);
+  flush_nosignal_tasks_remote();
+  return success;
+}
+
+void TaskGroup::ReturnInboundRingBuf(uint16_t bid, int32_t bytes) {
+  ring_listener_->ReturnInboundBuf(bid, bytes);
 }
 }  // namespace bthread

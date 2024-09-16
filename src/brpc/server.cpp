@@ -75,6 +75,7 @@
 #include "brpc/builtin/common.h"               // GetProgramName
 #include "brpc/details/tcmalloc_extension.h"
 #include "brpc/rdma/rdma_helper.h"
+#include "bthread/task_control.h"
 
 inline std::ostream& operator<<(std::ostream& os, const timeval& tm) {
     const char old_fill = os.fill();
@@ -85,6 +86,7 @@ inline std::ostream& operator<<(std::ostream& os, const timeval& tm) {
 
 extern "C" {
 void* bthread_get_assigned_data();
+bthread::TaskControl* bthread_get_task_control();
 }
 
 namespace brpc {
@@ -1193,6 +1195,10 @@ int Server::Stop(int timeout_ms) {
         // TODO: calculate timeout?
         _internal_am->StopAccept(timeout_ms);
     }
+
+    bthread::TaskControl *task_cntl = bthread_get_task_control();
+    task_cntl->ClearRunners();
+
     return 0;
 }
 

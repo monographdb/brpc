@@ -255,6 +255,16 @@ TaskGroup* TaskControl::choose_one_group() {
     return NULL;
 }
 
+TaskGroup *TaskControl::choose_group(size_t g_seed) {
+  const size_t ngroup = _ngroup.load(butil::memory_order_acquire);
+  if (ngroup != 0) {
+    size_t g_idx = g_seed % ngroup;
+    return _groups[g_idx];
+  }
+  CHECK(false) << "Impossible: ngroup is 0";
+  return NULL;
+}
+
 TaskGroup* TaskControl::select_group(int group_id) {
     const size_t ngroup = _ngroup.load(butil::memory_order_acquire);
     for (size_t i = 0; i < ngroup; i++) {
@@ -266,10 +276,11 @@ TaskGroup* TaskControl::select_group(int group_id) {
     return NULL;
 }
 
-std::pair<TaskGroup*, int> TaskControl::SocketToGroup(uint64_t sock_id) {
+void TaskControl::ClearRunners() {
     const size_t ngroup = _ngroup.load(butil::memory_order_relaxed);
-    int g_idx = sock_id % ngroup;
-    return {_groups[g_idx], g_idx};
+    for (size_t gid = 0; gid < ngroup; ++gid) {
+        _groups[gid]->EndSocketRunners();
+    }
 }
 
 extern int stop_and_join_epoll_threads();

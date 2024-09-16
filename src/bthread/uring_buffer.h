@@ -9,7 +9,7 @@
 
 class UringBufferPool {
 public:
-  UringBufferPool(size_t pool_size, io_uring *ring) : pool_size_(pool_size) {
+  UringBufferPool(size_t pool_size, io_uring *ring) {
     mem_bulk_ = (char *)std::aligned_alloc(4096, 4096 * pool_size);
 
     std::vector<iovec> register_buf;
@@ -52,18 +52,11 @@ public:
     }
   }
 
-  void Recycle(const char *buf) {
-    assert(buf >= mem_bulk_ && buf < mem_bulk_ + pool_size_ * 4096);
-    assert(((uint64_t)buf & (4096 - 1)) == 0);
-
-    uint16_t buf_idx = (buf - mem_bulk_) >> 12;
-    assert(buf_idx < pool_size_);
-    assert(buf_pool_.size() < pool_size_);
+  void Recycle(uint16_t buf_idx) {
     buf_pool_.emplace_back(buf_idx);
   }
 
 private:
   char *mem_bulk_{nullptr};
-  size_t pool_size_;
   std::vector<uint16_t> buf_pool_;
 };

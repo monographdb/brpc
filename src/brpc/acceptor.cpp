@@ -292,9 +292,12 @@ void Acceptor::OnNewConnectionsUntilEAGAIN(Socket* acception) {
 #else
         {
 #endif
-            options.on_edge_triggered_events = InputMessenger::OnNewMessages;
+            // options.on_edge_triggered_events = InputMessenger::OnNewMessages;
+            options.on_edge_triggered_events = InputMessenger::OnNewMessagesFromRing;
         }
         options.use_rdma = am->_use_rdma;
+        options.bound_gid_ = acception->recv_num_;
+        acception->recv_num_++;
         if (Socket::Create(options, &socket_id) != 0) {
             LOG(ERROR) << "Fail to create Socket";
             continue;

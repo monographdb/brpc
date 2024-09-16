@@ -210,21 +210,20 @@ ParseResult ParseRedisMessage(butil::IOBuf* source, Socket* socket,
         butil::IOBuf sendbuf;
         appender.move_to(sendbuf);
         if (ring_buf_size > 0) {
-            assert(sendbuf.empty());
-            int ret = socket->RingBufferWrite(ring_buf, ring_buf_idx,
-                                              ring_buf_size);
-            if (ret != 0) {
-                // If the fixed buffer write is not submitted,
-                // falls back to the old socket write.
-                sendbuf.append(ring_buf, ring_buf_size);
-                cur_group->RecycleRingBuffer(ring_buf);
-            } else {
-                // The fixed buffer write is submitted successfully.
-                // The ring buffer will be recycled after the IO uring
-                // finishes the write request.
-            }
+          assert(sendbuf.empty());
+          int ret =
+              socket->RingBufferWrite(ring_buf, ring_buf_idx, ring_buf_size);
+          if (ret != 0) {
+            // If the fixed buffer write is not submitted,
+            // falls back to the old socket write.
+            sendbuf.append(ring_buf, ring_buf_size);
+            cur_group->RecycleRingBuffer(ring_buf_idx);
+          } else {
+            // The fixed buffer write is submitted successfully. The ring buffer
+            // will be recycled after the IO uring finishes the write request.
+          }
         } else if (ring_buf != nullptr) {
-            cur_group->RecycleRingBuffer(ring_buf);
+            cur_group->RecycleRingBuffer(ring_buf_idx);
         }
 
         if (ring_buf_size == 0) {

@@ -31,14 +31,20 @@
 #include "butil/resource_pool.h"                    // ResourceId
 #include "bthread/parking_lot.h"
 
-#include "epoll_queue.h"
+#include <unordered_set>
+#include "spsc_queue.h"
+#include "inbound_ring_buf.h"
 
 struct io_uring;
 struct io_uring_sqe;
+struct io_uring_buf_ring;
 class UringBufferPool;
+class SocketRunner;
+class InboundRingListener;
 
 namespace brpc {
 class Socket;
+struct SocketInboundBuf;
 }
 
 namespace bthread {
@@ -83,7 +89,8 @@ public:
     int start_background(bthread_t* __restrict tid,
                          const bthread_attr_t* __restrict attr,
                          void * (*fn)(void*),
-                         void* __restrict arg);
+                         void* __restrict arg,
+                         bool is_bound = false);
 
     // Suspend caller and run next bthread in TaskGroup *pg.
     static void sched(TaskGroup** pg);
@@ -218,9 +225,18 @@ public:
     bool HasPendingIo() const;
     void ClearPendingIo(uint32_t cnt);
     std::pair<char *, uint16_t> GetRingBuffer();
-    std::pair<uint16_t, brpc::Socket*> RecycleRingBuffer(const char *ring_buf);
-    void UseRingBuffer(const char *ring_buf, uint16_t buf_size, brpc::Socket *sock);
-    bool EpollEnqueue(uint64_t sock, uint32_t events, const void *attr);
+    std::string_view RecycleRingBuffer(uint16_t buf_idx);
+    void UseRingBuffer(uint16_t buf_idx, const char *buf, size_t buf_size);
+    void AddSocketRunner(SocketRunner *runner);
+    void EndSocketRunners();
+    void EndSocketRunner(SocketRunner *runner);
+    int RegisterSocket(brpc::Socket *sock);
+    void UnregisterSocket(int fd);
+    void RearmSocket(brpc::Socket *sock);
+    const char *GetInboundRingBuf(uint16_t buf_id);
+    bool EnqueueInboundRingBuf(brpc::Socket *sock, int32_t bytes, uint16_t bid,
+                               bool rearm);
+    void ReturnInboundRingBuf(uint16_t bid, int32_t bytes);
 
   private:
     friend class TaskControl;
@@ -306,11 +322,14 @@ public:
     bool has_submissions_{false};
     bool io_uring_init_{false};
     std::unique_ptr<UringBufferPool> ring_buf_pool_{nullptr};
-    std::unordered_map<const char *, std::pair<uint16_t, brpc::Socket*>> 
-        ring_buf_in_use_;
+    // Maps the fixed buffer index to the buffer view
+    std::unordered_map<uint16_t, std::string_view> fixed_write_buf_in_use_;
 
-    eloq::SpscQueue<EpollEntry> epoll_queue_;
-    std::array<EpollEntry, 128> epoll_batch_;
+    bthread::Mutex runner_mux_;
+    std::unordered_set<SocketRunner*> sock_runners_;
+    std::unique_ptr<InboundRingListener> ring_listener_{nullptr};
+    eloq::SpscQueue<InboundRingBuf> inbound_queue_;
+    std::array<InboundRingBuf, 128> inbound_batch_;
 };
 
 }  // namespace bthread
