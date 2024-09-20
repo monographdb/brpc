@@ -83,8 +83,6 @@ public:
     // Select task group.
     TaskGroup* select_group(int group_id);
 
-    void ClearRunners();
-
 private:
     // Add/Remove a TaskGroup.
     // Returns 0 on success, -1 otherwise.

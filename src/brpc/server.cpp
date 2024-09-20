@@ -1195,10 +1195,6 @@ int Server::Stop(int timeout_ms) {
         // TODO: calculate timeout?
         _internal_am->StopAccept(timeout_ms);
     }
-
-    bthread::TaskControl *task_cntl = bthread_get_task_control();
-    task_cntl->ClearRunners();
-
     return 0;
 }
 

@@ -174,11 +174,7 @@ public:
     ssize_t pcut_into_file_descriptor(int fd, off_t offset /*NOTE*/, 
                                       size_t size_hint = 1024*1024);
 
-    void io_uring_pcut_into_file_descriptor(int fd,
-                                            io_uring *io_ring,
-                                            io_uring_sqe *sqe,
-                                            std::vector<struct iovec> *iovecs,
-                                            size_t size_hint = 1024*1024);
+    void prepare_iovecs(std::vector<struct iovec> *iovecs);
 
     // Cut into SSL channel `ssl'. Returns what `SSL_write' returns
     // and the ssl error code will be filled into `ssl_error'
@@ -706,11 +702,11 @@ public:
         target = IOBuf::Movable(buf());
     }
 
-    uint16_t ring_buffer_size() const {
+    uint32_t ring_buffer_size() const {
         return ring_buf_size_;
     }
 
-    void set_ring_buffer(char *buf, uint16_t buf_capacity = 4096) {
+    void set_ring_buffer(char *buf, uint32_t buf_capacity = 4096) {
         ring_buf_ = buf;
         ring_buf_size_ = 0;
         ring_buf_capacity_ = buf_capacity;
@@ -729,8 +725,8 @@ private:
     IOBufAsZeroCopyOutputStream _zc_stream;
 
     char *ring_buf_{nullptr};
-    uint16_t ring_buf_size_{0};
-    uint16_t ring_buf_capacity_{0};
+    uint32_t ring_buf_size_{0};
+    uint32_t ring_buf_capacity_{0};
 };
 
 // Iterate bytes of a IOBuf.

@@ -31,16 +31,11 @@
 #include "butil/resource_pool.h"                    // ResourceId
 #include "bthread/parking_lot.h"
 
-#include <unordered_set>
 #include "spsc_queue.h"
 #include "inbound_ring_buf.h"
 
-struct io_uring;
-struct io_uring_sqe;
-struct io_uring_buf_ring;
-class UringBufferPool;
-class SocketRunner;
-class InboundRingListener;
+class RingWriteBufferPool;
+class RingListener;
 
 namespace brpc {
 class Socket;
@@ -217,26 +212,17 @@ public:
     std::function<bool(int16_t)> update_ext_proc_{nullptr};
     std::function<bool(bool)> override_shard_heap_{nullptr};
 
-    void InitIoUring();
-    io_uring *IoUring() const;
-    io_uring_sqe *GetIoUringSqe();
-    bool HasIoSubmissions() const;
-    void UpdatePendingIoCnt(uint32_t cnt);
-    bool HasPendingIo() const;
-    void ClearPendingIo(uint32_t cnt);
-    std::pair<char *, uint16_t> GetRingBuffer();
-    std::string_view RecycleRingBuffer(uint16_t buf_idx);
-    void UseRingBuffer(uint16_t buf_idx, const char *buf, size_t buf_size);
-    void AddSocketRunner(SocketRunner *runner);
-    void EndSocketRunners();
-    void EndSocketRunner(SocketRunner *runner);
     int RegisterSocket(brpc::Socket *sock);
     void UnregisterSocket(int fd);
-    void RearmSocket(brpc::Socket *sock);
-    const char *GetInboundRingBuf(uint16_t buf_id);
+    void SocketRecv(brpc::Socket *sock);
+    int SocketFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx);
+    int SocketNonFixedWrite(brpc::Socket *sock);
+    const char *GetRingReadBuf(uint16_t buf_id);
     bool EnqueueInboundRingBuf(brpc::Socket *sock, int32_t bytes, uint16_t bid,
                                bool rearm);
-    void ReturnInboundRingBuf(uint16_t bid, int32_t bytes);
+    void RecycleRingReadBuf(uint16_t bid, int32_t bytes);
+    std::pair<char *, uint16_t> GetRingWriteBuf();
+    void RecycleRingWriteBuf(uint16_t buf_idx);
 
   private:
     friend class TaskControl;
@@ -317,17 +303,7 @@ public:
 
     int _sched_recursive_guard;
 
-    std::unique_ptr<io_uring> io_uring_;
-    uint32_t pending_io_cnt_{0};
-    bool has_submissions_{false};
-    bool io_uring_init_{false};
-    std::unique_ptr<UringBufferPool> ring_buf_pool_{nullptr};
-    // Maps the fixed buffer index to the buffer view
-    std::unordered_map<uint16_t, std::string_view> fixed_write_buf_in_use_;
-
-    bthread::Mutex runner_mux_;
-    std::unordered_set<SocketRunner*> sock_runners_;
-    std::unique_ptr<InboundRingListener> ring_listener_{nullptr};
+    std::unique_ptr<RingListener> ring_listener_{nullptr};
     eloq::SpscQueue<InboundRingBuf> inbound_queue_;
     std::array<InboundRingBuf, 128> inbound_batch_;
 };

@@ -954,32 +954,25 @@ ssize_t IOBuf::pcut_into_file_descriptor(int fd, off_t offset, size_t size_hint)
     return nw;
 }
 
-void IOBuf::io_uring_pcut_into_file_descriptor(
-    int fd,
-    io_uring *io_ring,
-    io_uring_sqe *sqe,
-    std::vector<struct iovec> *iovecs,
-    size_t size_hint)
-{
-    assert(!empty());
-    // iovecs is allocated on heap, so it is not bound by IOBUF_IOV_MAX,
-    const size_t nref = _ref_num();
-    iovecs->reserve(nref);
-    iovecs->clear();
-    size_t nvec = 0;
-    size_t cur_len = 0;
+void IOBuf::prepare_iovecs(std::vector<struct iovec> *iovecs) {
+  assert(!empty());
+  // iovecs is allocated on heap, so it is not bound by IOBUF_IOV_MAX,
+  const size_t nref = _ref_num();
+  iovecs->reserve(nref);
+  iovecs->clear();
+  size_t nvec = 0;
+  size_t cur_len = 0;
 
-    do {
-        IOBuf::BlockRef const& r = _ref_at(nvec);
-        iovec &last = iovecs->emplace_back();
-        last.iov_base = r.block->data + r.offset;
-        last.iov_len = r.length;
-        ++nvec;
-        cur_len += r.length;
-    } while (nvec < nref && cur_len < size_hint);
+  do {
+    IOBuf::BlockRef const &r = _ref_at(nvec);
+    iovec &last = iovecs->emplace_back();
+    last.iov_base = r.block->data + r.offset;
+    last.iov_len = r.length;
+    ++nvec;
+    cur_len += r.length;
+  } while (nvec < nref);
 
-    assert(iovecs->size() == nvec);
-    io_uring_prep_writev(sqe, fd, iovecs->data(), nvec, 0);
+  assert(iovecs->size() == nvec);
 }
 
 ssize_t IOBuf::cut_into_writer(IWriter* writer, size_t size_hint) {

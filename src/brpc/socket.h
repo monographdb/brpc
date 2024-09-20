@@ -39,8 +39,7 @@
 #include "brpc/socket_message.h"          // SocketMessagePtr
 #include "bvar/bvar.h"
 
-class SocketRunner;
-class InboundRingListener;
+class RingListener;
 struct InboundRingBuf;
 
 namespace bthread {
@@ -338,7 +337,6 @@ public:
             , ignore_eovercrowded(false), write_in_background(false) {}
     };
     int Write(butil::IOBuf *msg, const WriteOptions* options = NULL);
-    int RingBufferWrite(const char *ring_buf, uint16_t ring_buf_idx, uint16_t ring_buf_size);
 
     // Write an user-defined message. `msg' is released when Write() is
     // successful and *may* remain unchanged otherwise.
@@ -613,8 +611,9 @@ public:
 
     bthread_keytable_pool_t* keytable_pool() const { return _keytable_pool; }
 
-    void IoRingWriteCallback(int nw);
-    void ResumeRunner();
+    void RingNonFixedWriteCb(int nw);
+    void ProcessInbound();
+    void SetFixedWriteLen(uint32_t write_len);
 private:
     DISALLOW_COPY_AND_ASSIGN(Socket);
 
@@ -689,7 +688,6 @@ friend void DereferenceSocket(Socket*);
     void Revive();
 
     static void* ProcessEvent(void*);
-    static void *SocketRun(void *);
     static void *SocketProcess(void *);
     static void *SocketRegister(void *);
 
@@ -960,15 +958,18 @@ private:
     WriteRequest *io_uring_write_req_{nullptr};
     std::vector<struct iovec> iovecs_;
 
-    std::unique_ptr<SocketRunner> runner_{nullptr};
     std::vector<SocketInboundBuf> in_bufs_;
     bthread::TaskGroup *bound_g_{nullptr};
     int inbound_nw_{INT32_MAX};
-    uint16_t recv_num_{0};
     int reg_fd_idx_{-1};
+    // Registering a file in IO uring is async. This is the slot to hold the fd
+    // of the socket.
     int reg_fd_{-1};
+    uint16_t recv_num_{0};
+    uint16_t write_buf_idx_{UINT16_MAX};
+    uint32_t write_len_{0};
 
-    friend class ::InboundRingListener;
+    friend class ::RingListener;
 };
 
 } // namespace brpc

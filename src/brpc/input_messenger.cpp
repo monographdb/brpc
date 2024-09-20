@@ -393,9 +393,6 @@ void InputMessenger::OnNewMessages(Socket* m) {
 
     if (read_eof) {
         m->SetEOF();
-        if (m->runner_ != nullptr) {
-            m->runner_->Close();
-        }
     }
 }
 
@@ -447,9 +444,6 @@ void InputMessenger::OnNewMessagesFromRing(Socket *m) {
   }
 
   if (read_eof) {
-    if (m->runner_ != nullptr) {
-      m->runner_->Close();
-    }
     m->SetEOF();
   }
 }

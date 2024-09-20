@@ -54,7 +54,6 @@
 #include <sys/event.h>
 #endif
 #include "bthread/task_group.h"
-#include "socket_runner.h"
 #include <liburing.h>
 
 namespace bthread {
@@ -1196,74 +1195,6 @@ void* Socket::ProcessEvent(void* arg) {
     return NULL;
 }
 
-void *Socket::SocketRun(void *arg) {
-  bthread::TaskGroup *cur_group =
-      BAIDU_GET_VOLATILE_THREAD_LOCAL(bthread::tls_task_group);
-  bthread::TaskMeta *cur_task = cur_group->current_task();
-  if (cur_group->tx_processor_exec_ != nullptr) {
-    cur_task->SetBoundGroup(cur_group);
-  } else if (get_tx_proc_functors != nullptr) {
-    // if the tx proc functors are not set yet.
-    auto functors = get_tx_proc_functors(cur_group->group_id_);
-    cur_group->tx_processor_exec_ = std::get<0>(functors);
-    cur_group->update_ext_proc_ = std::get<1>(functors);
-    cur_group->override_shard_heap_ = std::get<2>(functors);
-    cur_group->update_ext_proc_(1);
-    cur_group->InitIoUring();
-    cur_task->SetBoundGroup(cur_group);
-  }
-
-  Socket *sock = static_cast<Socket *>(arg);
-  SocketUniquePtr s_uptr{sock};
-  SocketRunner *s_run = sock->runner_.get();
-  cur_group->AddSocketRunner(s_run);
-
-  int reg_ret = cur_group->RegisterSocket(sock);
-  if (reg_ret < 0) {
-    LOG(ERROR) << "Failed to register the socket " << sock->id()
-               << " to the IO uring listener.";
-    return nullptr;
-  }
-
-  SocketStatus status = s_run->Status();
-  while (status != SocketStatus::Closed) {
-    if (sock->in_bufs_.empty()) {
-      std::unique_lock<bthread::Mutex> lk(s_run->mux_);
-      status = s_run->Status();
-      while (sock->in_bufs_.empty() && status == SocketStatus::Busy) {
-        s_run->cv_.wait(lk);
-        status = s_run->Status();
-      }
-    }
-
-    if (status == SocketStatus::Closed) {
-      break;
-    }
-
-    for (auto &rbuf : sock->in_bufs_) {
-      sock->inbound_nw_ = rbuf.bytes_;
-      if (rbuf.bytes_ > 0) {
-        assert(sock->_read_buf.size() == 0);
-        const char *buf_head = cur_group->GetInboundRingBuf(rbuf.buf_id_);
-        sock->_read_buf.append(buf_head, rbuf.bytes_);
-        cur_group->ReturnInboundRingBuf(rbuf.buf_id_, rbuf.bytes_);
-      }
-
-      sock->_on_edge_triggered_events(sock);
-
-      if (rbuf.need_rearm_ && rbuf.bytes_ != 0) {
-        cur_group->RearmSocket(sock);
-      }
-    }
-    sock->in_bufs_.clear();
-    status = s_run->Status();
-  }
-  cur_group->UnregisterSocket(sock->fd());
-  cur_group->EndSocketRunner(s_run);
-
-  return nullptr;
-}
-
 void *Socket::SocketProcess(void *arg) {
   bthread::TaskGroup *cur_group =
       BAIDU_GET_VOLATILE_THREAD_LOCAL(bthread::tls_task_group);
@@ -1276,15 +1207,15 @@ void *Socket::SocketProcess(void *arg) {
     sock->inbound_nw_ = rbuf.bytes_;
     if (rbuf.bytes_ > 0) {
       assert(sock->_read_buf.size() == 0);
-      const char *buf_head = cur_group->GetInboundRingBuf(rbuf.buf_id_);
+      const char *buf_head = cur_group->GetRingReadBuf(rbuf.buf_id_);
       sock->_read_buf.append(buf_head, rbuf.bytes_);
-      cur_group->ReturnInboundRingBuf(rbuf.buf_id_, rbuf.bytes_);
+      cur_group->RecycleRingReadBuf(rbuf.buf_id_, rbuf.bytes_);
     }
 
     sock->_on_edge_triggered_events(sock);
 
     if (rbuf.need_rearm_ && rbuf.bytes_ != 0) {
-      cur_group->RearmSocket(sock);
+      cur_group->SocketRecv(sock);
     }
   }
   sock->in_bufs_.clear();
@@ -1314,14 +1245,14 @@ void Socket::SocketResume(Socket *sock, InboundRingBuf &rbuf,
   if (sock->_on_edge_triggered_events == nullptr || sock->fd() < 0) {
     if (rbuf.bytes_ > 0) {
       assert(rbuf.buf_id_ != UINT16_MAX);
-      group->ReturnInboundRingBuf(rbuf.buf_id_, rbuf.bytes_);
+      group->RecycleRingReadBuf(rbuf.buf_id_, rbuf.bytes_);
     }
     return;
   }
   bool prev_empty = sock->in_bufs_.empty();
   sock->in_bufs_.emplace_back(rbuf.bytes_, rbuf.buf_id_, rbuf.need_rearm_);
   if (prev_empty) {
-    sock->ResumeRunner();
+    sock->ProcessInbound();
   }
 }
 
@@ -1779,48 +1710,6 @@ int Socket::Write(butil::IOBuf* data, const WriteOptions* options_in) {
     return StartWrite(req, opt);
 }
 
-int Socket::RingBufferWrite(const char *ring_buf, uint16_t ring_buf_idx,
-                            uint16_t ring_buf_size) {
-    bthread::TaskGroup *g =
-        BAIDU_GET_VOLATILE_THREAD_LOCAL(bthread::tls_task_group);
-    assert(g->group_id_ == 0);
-    if (g == nullptr || g->tx_processor_exec_ == nullptr) {
-        return -1;
-    }
-    struct io_uring *io_ring = g->IoUring();
-    if (io_ring == nullptr) {
-        return -1;
-    }
-
-    assert(ring_buf != nullptr && ring_buf_size > 0);
-    struct io_uring_sqe *sqe = g->GetIoUringSqe();
-    if (sqe == nullptr) {
-        return -1;
-    }
-
-    // ReAddress() increments references of the socket (same as
-    // KeepWrite in background) so that the socket is still
-    // available when the async IO finishes and the write request
-    // is post-processed. The socket needs to be deferenced when
-    // post-processing the write request.
-    SocketUniquePtr ptr_for_keep_write;
-    ReAddress(&ptr_for_keep_write);
-    (void) ptr_for_keep_write.release();
-
-    io_uring_prep_write_fixed(
-        sqe, fd(), ring_buf, ring_buf_size, 0, ring_buf_idx);
-
-    uint64_t data = reinterpret_cast<uint64_t>(this);
-    data = data << 16;
-    // Encodes the buffer index using the [2, 16] bits
-    assert(ring_buf_idx <= (1<<14));
-    data |= (ring_buf_idx << 2);
-    data |= 1;
-    io_uring_sqe_set_data64(sqe, data);
-    g->UseRingBuffer(ring_buf_idx, ring_buf, ring_buf_size);
-    return 0;
-}
-
 int Socket::Write(SocketMessagePtr<>& msg, const WriteOptions* options_in) {
     WriteOptions opt;
     if (options_in) {
@@ -1917,34 +1806,12 @@ int Socket::StartWrite(WriteRequest* req, const WriteOptions& opt) {
 #endif
             bthread::TaskGroup *g =
                 BAIDU_GET_VOLATILE_THREAD_LOCAL(bthread::tls_task_group);
-            struct io_uring *io_ring = nullptr;
-            if (g != nullptr && g->tx_processor_exec_ != nullptr) {
-                io_ring = g->IoUring();
-            }
-            if (io_ring != nullptr && !req->data.empty()) {
-                struct io_uring_sqe *sqe = g->GetIoUringSqe();
-                if (sqe != nullptr) {
-                    // ReAddress() increments references of the socket (same as
-                    // KeepWrite in background) so that the socket is still
-                    // available when the async IO finishes and the write request
-                    // is post-processed. The socket needs to be deferenced when
-                    // post-processing the write request.
-                    ReAddress(&ptr_for_keep_write);
-                    req->socket = ptr_for_keep_write.release();
-                    io_uring_write_req_ = req;
-                    req->data.io_uring_pcut_into_file_descriptor(fd(), io_ring,
-                                                                 sqe, &iovecs_);
-                    // Memory pointers occupy 48 bits. We are going to use the lowest
-                    // 16 bits to encode the request type and other information.
-                    assert([](void *ptr){
-                        uint64_t mask = UINT16_MAX;
-                        mask = mask << 48;
-                        return (mask & reinterpret_cast<uint64_t>(ptr)) == 0;
-                    }(this));
-
-                    uint64_t data = reinterpret_cast<uint64_t>(this);
-                    data = data << 16;
-                    io_uring_sqe_set_data64(sqe, data);
+            if (g != nullptr) {
+                io_uring_write_req_ = req;
+                req->data.prepare_iovecs(&iovecs_);
+                req->socket = this;
+                int ret = g->SocketNonFixedWrite(this);
+                if (ret == 0) {
                     return 0;
                 }
             }
@@ -2396,22 +2263,17 @@ int Socket::StartInputEvent(SocketId id, uint32_t events,
         // is just 1500~1700/s
         g_vars->neventthread << 1;
 
-        if (s->runner_ != nullptr &&
-            s->_on_edge_triggered_events == InputMessenger::OnNewMessages) {
-            s->runner_->Notify();
-        } else {
-            bthread_t tid;
-            // transfer ownership as well, don't use s anymore!
-            Socket* const p = s.release();
+        bthread_t tid;
+        // transfer ownership as well, don't use s anymore!
+        Socket* const p = s.release();
 
-            bthread_attr_t attr = thread_attr;
-            attr.keytable_pool = p->_keytable_pool;
-            // set no signal flag
-            attr.flags |= BTHREAD_NOSIGNAL;
-            if (bthread_start_urgent(&tid, &attr, ProcessEvent, p) != 0) {
-                LOG(FATAL) << "Fail to start ProcessEvent";
-                ProcessEvent(p);
-            }
+        bthread_attr_t attr = thread_attr;
+        attr.keytable_pool = p->_keytable_pool;
+        // set no signal flag
+        attr.flags |= BTHREAD_NOSIGNAL;
+        if (bthread_start_urgent(&tid, &attr, ProcessEvent, p) != 0) {
+            LOG(FATAL) << "Fail to start ProcessEvent";
+            ProcessEvent(p);
         }
     }
     return 0;
@@ -3155,7 +3017,7 @@ std::string Socket::description() const {
     return result;
 }
 
-void Socket::IoRingWriteCallback(int nw) {
+void Socket::RingNonFixedWriteCb(int nw) {
     // Deferences the socket if the write request finishes.
     SocketUniquePtr sock(this);
 
@@ -3189,6 +3051,7 @@ void Socket::IoRingWriteCallback(int nw) {
     // KeepWrite will continue to reference the socket. So, releases the unique
     // pointer which does not decrement the reference count.
     (void) sock.release();
+    LOG(INFO) << "sock " << id() << " non-fixed write cb keep write.";
     if (bthread_start_background(&th, &BTHREAD_ATTR_NORMAL,
                                  KeepWrite, req) != 0) {
         LOG(FATAL) << "Fail to start KeepWrite";
@@ -3205,27 +3068,25 @@ CALLBACK_FAIL_TO_WRITE:
     return;
 }
 
-void Socket::ResumeRunner() {
-  if (runner_ != nullptr) {
-    runner_->Notify();
-  } else {
-    bthread_attr_t attr;
-    attr = BTHREAD_ATTR_NORMAL;
-    attr = attr | BTHREAD_NEVER_QUIT;
+void Socket::ProcessInbound() {
+  bthread_attr_t attr;
+  attr = BTHREAD_ATTR_NORMAL;
+  attr = attr | BTHREAD_NEVER_QUIT;
 
-    SocketUniquePtr socket_uptr;
-    ReAddress(&socket_uptr);
-    (void)socket_uptr.release();
-    // Start bthread that continously processes messages of this socket.
-    bthread_t tid;
-    attr.keytable_pool = _keytable_pool;
-    if (bthread_start_urgent(&tid, &attr, brpc::Socket::SocketProcess, this) !=
-        0) {
-      LOG(FATAL) << "Fail to start SocketProcess";
-      brpc::Socket::SocketProcess(this);
-    }
+  SocketUniquePtr socket_uptr;
+  ReAddress(&socket_uptr);
+  (void)socket_uptr.release();
+  // Start bthread that continously processes messages of this socket.
+  bthread_t tid;
+  attr.keytable_pool = _keytable_pool;
+  if (bthread_start_urgent(&tid, &attr, brpc::Socket::SocketProcess, this) !=
+      0) {
+    LOG(FATAL) << "Fail to start SocketProcess";
+    brpc::Socket::SocketProcess(this);
   }
 }
+
+void Socket::SetFixedWriteLen(uint32_t write_len) { write_len_ = write_len; }
 
 SocketSSLContext::SocketSSLContext()
     : raw_ctx(NULL)

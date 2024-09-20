@@ -35,6 +35,7 @@
 #include "brpc/redis_command.h"
 #include "brpc/policy/redis_protocol.h"
 #include "bthread/task_group.h"
+#include "bthread/ring_write_buf_pool.h"
 
 namespace bthread {
 extern BAIDU_THREAD_LOCAL TaskGroup *tls_task_group;
@@ -174,12 +175,11 @@ ParseResult ParseRedisMessage(butil::IOBuf* source, Socket* socket,
             cur_group->update_ext_proc_ = std::get<1>(functors);
             cur_group->override_shard_heap_ = std::get<2>(functors);
             cur_group->update_ext_proc_(1);
-            cur_group->InitIoUring();
             cur_task->SetBoundGroup(cur_group);
         }
 
-        auto [ring_buf, ring_buf_idx] = cur_group->GetRingBuffer();
-        appender.set_ring_buffer(ring_buf);
+        auto [ring_buf, ring_buf_idx] = cur_group->GetRingWriteBuf();
+        appender.set_ring_buffer(ring_buf, RingWriteBufferPool::buf_length);
 
         err = ctx->parser.Consume(*source, &current_args, &ctx->arena);
         if (err != PARSE_OK) {
@@ -205,25 +205,25 @@ ParseResult ParseRedisMessage(butil::IOBuf* source, Socket* socket,
         }
 
         cur_task->SetBoundGroup(NULL);
-        uint16_t ring_buf_size = appender.ring_buffer_size();
+        uint32_t ring_buf_size = appender.ring_buffer_size();
 
         butil::IOBuf sendbuf;
         appender.move_to(sendbuf);
         if (ring_buf_size > 0) {
           assert(sendbuf.empty());
-          int ret =
-              socket->RingBufferWrite(ring_buf, ring_buf_idx, ring_buf_size);
+          socket->SetFixedWriteLen(ring_buf_size);
+          int ret = cur_group->SocketFixedWrite(socket, ring_buf_idx);
           if (ret != 0) {
             // If the fixed buffer write is not submitted,
             // falls back to the old socket write.
             sendbuf.append(ring_buf, ring_buf_size);
-            cur_group->RecycleRingBuffer(ring_buf_idx);
+            cur_group->RecycleRingWriteBuf(ring_buf_idx);
           } else {
             // The fixed buffer write is submitted successfully. The ring buffer
             // will be recycled after the IO uring finishes the write request.
           }
         } else if (ring_buf != nullptr) {
-            cur_group->RecycleRingBuffer(ring_buf_idx);
+            cur_group->RecycleRingWriteBuf(ring_buf_idx);
         }
 
         if (ring_buf_size == 0) {

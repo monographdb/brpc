@@ -1,16 +1,15 @@
 #pragma once
 
-#include <cassert>
 #include <cstdint>
 #include <cstdlib>
 #include <glog/logging.h>
 #include <liburing.h>
 #include <vector>
 
-class UringBufferPool {
+class RingWriteBufferPool {
 public:
-  UringBufferPool(size_t pool_size, io_uring *ring) {
-    mem_bulk_ = (char *)std::aligned_alloc(4096, 4096 * pool_size);
+  RingWriteBufferPool(size_t pool_size, io_uring *ring) {
+    mem_bulk_ = (char *)std::aligned_alloc(buf_length, buf_length * pool_size);
 
     std::vector<iovec> register_buf;
     register_buf.resize(pool_size);
@@ -18,8 +17,8 @@ public:
 
     for (size_t idx = 0; idx < pool_size; ++idx) {
       buf_pool_[idx] = idx;
-      register_buf[idx].iov_base = mem_bulk_ + (idx * 4096);
-      register_buf[idx].iov_len = 4096;
+      register_buf[idx].iov_base = mem_bulk_ + (idx * buf_length);
+      register_buf[idx].iov_len = buf_length;
     }
 
     int ret = io_uring_register_buffers(ring, register_buf.data(),
@@ -36,7 +35,7 @@ public:
     }
   }
 
-  ~UringBufferPool() {
+  ~RingWriteBufferPool() {
     if (mem_bulk_ != nullptr) {
       free(mem_bulk_);
     }
@@ -48,13 +47,17 @@ public:
     } else {
       uint16_t buf_idx = buf_pool_.back();
       buf_pool_.pop_back();
-      return {mem_bulk_ + (buf_idx * 4096), buf_idx};
+      return {mem_bulk_ + (buf_idx * buf_length), buf_idx};
     }
   }
 
-  void Recycle(uint16_t buf_idx) {
-    buf_pool_.emplace_back(buf_idx);
+  const char *GetBuf(uint16_t buf_idx) const {
+    return mem_bulk_ + (buf_idx * buf_length);
   }
+
+  void Recycle(uint16_t buf_idx) { buf_pool_.emplace_back(buf_idx); }
+
+  inline static size_t buf_length = sysconf(_SC_PAGESIZE);
 
 private:
   char *mem_bulk_{nullptr};
