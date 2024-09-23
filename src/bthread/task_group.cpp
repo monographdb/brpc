@@ -142,14 +142,17 @@ bool TaskGroup::wait_task(bthread_t* tid) {
           return false;
         }
 
+#ifdef IO_URING_ENABLED
         if (ring_listener_ != nullptr) {
             ring_listener_->SubmitAll();
         }
+#endif
 
         if (tx_processor_exec_) {
             tx_processor_exec_();
         }
 
+#ifdef IO_URING_ENABLED
         size_t ring_poll_cnt = ring_listener_->ExtPoll();
 
         size_t cnt = inbound_queue_.TryDequeueBulk(inbound_batch_.begin(),
@@ -159,14 +162,18 @@ bool TaskGroup::wait_task(bthread_t* tid) {
           brpc::Socket *sock = rbuf.sock_;
           brpc::Socket::SocketResume(sock, rbuf, this);
         }
+#endif
 
         if (_rq.pop(tid) || _bound_rq.pop(tid) || _remote_rq.pop(tid)) {
             _processed_tasks++;
             return true;
-        } else if (cnt > 0 || ring_poll_cnt > 0) {
+        }
+#ifdef IO_URING_ENABLED
+        else if (cnt > 0 || ring_poll_cnt > 0) {
             empty = 0;
             continue;
         }
+#endif
 
         empty++;
         if (empty == 1) {
@@ -196,7 +203,9 @@ bool TaskGroup::wait_task(bthread_t* tid) {
                 poll_start_ms = FLAGS_worker_polling_time_ms > 0 ? butil::cpuwide_time_ms() : 0;
                 continue;
             }
+#ifdef IO_URING_ENABLED
             ring_listener_->ExtWakeup();
+#endif
             _pl->wait(_last_pl_state);
             poll_start_ms = FLAGS_worker_polling_time_ms > 0 ? butil::cpuwide_time_ms() : 0;
             if (update_ext_proc_) {
@@ -282,7 +291,9 @@ TaskGroup::TaskGroup(TaskControl* c)
 #ifndef NDEBUG
     , _sched_recursive_guard(0)
 #endif
+#ifdef IO_URING_ENABLED
     , inbound_queue_(1024)
+#endif
 {
     _steal_seed = butil::fast_rand();
     _steal_offset = OFFSET_TABLE[_steal_seed % ARRAY_SIZE(OFFSET_TABLE)];
@@ -336,14 +347,14 @@ int TaskGroup::init(size_t runqueue_capacity) {
     _main_tid = m->tid;
     _main_stack = stk;
     _last_run_ns = butil::cpuwide_time_ns();
-
+#ifdef IO_URING_ENABLED
     ring_listener_ = std::make_unique<RingListener>(this);
     int ret = ring_listener_->Init();
     if (ret) {
       LOG(ERROR) << "Failed to initialize the IO uring listener.";
       ring_listener_ = nullptr;
     }
-
+#endif
     return 0;
 }
 
@@ -1153,6 +1164,7 @@ void print_task(std::ostream& os, bthread_t tid) {
     }
 }
 
+#ifdef IO_URING_ENABLED
 int TaskGroup::RegisterSocket(brpc::Socket *sock) {
   return ring_listener_->Register(sock);
 }
@@ -1223,4 +1235,5 @@ std::pair<char *, uint16_t> TaskGroup::GetRingWriteBuf() {
 void TaskGroup::RecycleRingWriteBuf(uint16_t buf_idx) {
   ring_listener_->RecycleWriteBuf(buf_idx);
 }
+#endif
 }  // namespace bthread

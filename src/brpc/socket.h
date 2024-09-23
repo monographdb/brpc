@@ -39,13 +39,14 @@
 #include "brpc/socket_message.h"          // SocketMessagePtr
 #include "bvar/bvar.h"
 
+#ifdef IO_URING_ENABLED
 class RingListener;
 struct InboundRingBuf;
 
 namespace bthread {
 class TaskGroup;
 }
-
+#endif
 namespace brpc {
 namespace policy {
 class ConsistentHashingLoadBalancer;
@@ -228,6 +229,7 @@ struct SocketOptions {
     size_t bound_gid_;
 };
 
+#ifdef IO_URING_ENABLED
 struct SocketInboundBuf {
   SocketInboundBuf() = delete;
   SocketInboundBuf(int32_t size, uint16_t bid, bool rearm = false)
@@ -251,6 +253,7 @@ struct SocketInboundBuf {
   uint16_t buf_id_{UINT16_MAX};
   bool need_rearm_{false};
 };
+#endif
 
 // Abstractions on reading from and writing into file descriptors.
 // NOTE: accessed by multiple threads(frequently), align it by cacheline.
@@ -464,8 +467,10 @@ public:
     // This function does not block caller.
     static int StartInputEvent(SocketId id, uint32_t events,
                                const bthread_attr_t& thread_attr);
+#ifdef IO_URING_ENABLED
     static void SocketResume(Socket *sock, InboundRingBuf &rbuf,
                              bthread::TaskGroup *group);
+#endif
 
     static const int PROGRESS_INIT = 1;
     bool MoreReadEvents(int* progress);
@@ -611,9 +616,11 @@ public:
 
     bthread_keytable_pool_t* keytable_pool() const { return _keytable_pool; }
 
+#ifdef IO_URING_ENABLED
     void RingNonFixedWriteCb(int nw);
     void ProcessInbound();
     void SetFixedWriteLen(uint32_t write_len);
+#endif
 private:
     DISALLOW_COPY_AND_ASSIGN(Socket);
 
@@ -688,8 +695,10 @@ friend void DereferenceSocket(Socket*);
     void Revive();
 
     static void* ProcessEvent(void*);
+#ifdef IO_URING_ENABLED
     static void *SocketProcess(void *);
     static void *SocketRegister(void *);
+#endif
 
     static void* KeepWrite(void*);
 
@@ -955,6 +964,7 @@ private:
     // non-NULL means that keepalive is on.
     std::shared_ptr<SocketKeepaliveOptions> _keepalive_options;
 
+#ifdef IO_URING_ENABLED
     WriteRequest *io_uring_write_req_{nullptr};
     std::vector<struct iovec> iovecs_;
 
@@ -970,6 +980,7 @@ private:
     uint32_t write_len_{0};
 
     friend class ::RingListener;
+#endif
 };
 
 } // namespace brpc

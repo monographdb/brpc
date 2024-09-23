@@ -177,9 +177,10 @@ ParseResult ParseRedisMessage(butil::IOBuf* source, Socket* socket,
             cur_group->update_ext_proc_(1);
             cur_task->SetBoundGroup(cur_group);
         }
-
+#ifdef IO_URING_ENABLED
         auto [ring_buf, ring_buf_idx] = cur_group->GetRingWriteBuf();
         appender.set_ring_buffer(ring_buf, RingWriteBufferPool::buf_length);
+#endif
 
         err = ctx->parser.Consume(*source, &current_args, &ctx->arena);
         if (err != PARSE_OK) {
@@ -205,10 +206,10 @@ ParseResult ParseRedisMessage(butil::IOBuf* source, Socket* socket,
         }
 
         cur_task->SetBoundGroup(NULL);
-        uint32_t ring_buf_size = appender.ring_buffer_size();
-
         butil::IOBuf sendbuf;
         appender.move_to(sendbuf);
+#ifdef IO_URING_ENABLED
+        uint32_t ring_buf_size = appender.ring_buffer_size();
         if (ring_buf_size > 0) {
           assert(sendbuf.empty());
           socket->SetFixedWriteLen(ring_buf_size);
@@ -229,6 +230,7 @@ ParseResult ParseRedisMessage(butil::IOBuf* source, Socket* socket,
         if (ring_buf_size == 0) {
             LOG(INFO) << "Redis socket write not using fixed buffer.";
         }
+#endif
 
         if (!sendbuf.empty()) {
             Socket::WriteOptions wopt;

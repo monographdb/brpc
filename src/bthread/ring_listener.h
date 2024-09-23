@@ -1,5 +1,7 @@
 #pragma once
 
+#ifdef IO_URING_ENABLED
+
 #include <condition_variable>
 #include <glog/logging.h>
 #include <iostream>
@@ -13,10 +15,6 @@
 #include "bthread/ring_write_buf_pool.h"
 #include "bthread/task_group.h"
 #include "butil/threading/platform_thread.h"
-
-#ifndef IORING_RECVSEND_BUNDLE
-#define IORING_RECVSEND_BUNDLE (1U << 4)
-#endif
 
 class RingListener {
 public:
@@ -717,3 +715,5 @@ private:
   inline static size_t buf_length = sysconf(_SC_PAGESIZE);
   inline static size_t buf_ring_size = 1024;
 };
+
+#endif

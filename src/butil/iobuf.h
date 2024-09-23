@@ -701,7 +701,7 @@ public:
     void move_to(IOBuf& target) {
         target = IOBuf::Movable(buf());
     }
-
+#ifdef IO_URING_ENABLED
     uint32_t ring_buffer_size() const {
         return ring_buf_size_;
     }
@@ -711,6 +711,7 @@ public:
         ring_buf_size_ = 0;
         ring_buf_capacity_ = buf_capacity;
     }
+#endif
     
 private:
     void shrink();
@@ -723,10 +724,11 @@ private:
     void* _data_end;
     IOBuf _buf;
     IOBufAsZeroCopyOutputStream _zc_stream;
-
+#ifdef IO_URING_ENABLED
     char *ring_buf_{nullptr};
     uint32_t ring_buf_size_{0};
     uint32_t ring_buf_capacity_{0};
+#endif
 };
 
 // Iterate bytes of a IOBuf.

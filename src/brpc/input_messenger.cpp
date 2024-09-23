@@ -395,7 +395,7 @@ void InputMessenger::OnNewMessages(Socket* m) {
         m->SetEOF();
     }
 }
-
+#ifdef IO_URING_ENABLED
 void InputMessenger::OnNewMessagesFromRing(Socket *m) {
   // Notes:
   // - If the socket has only one message, the message will be parsed and
@@ -447,6 +447,7 @@ void InputMessenger::OnNewMessagesFromRing(Socket *m) {
     m->SetEOF();
   }
 }
+#endif
 
 InputMessenger::InputMessenger(size_t capacity)
     : _handlers(NULL)

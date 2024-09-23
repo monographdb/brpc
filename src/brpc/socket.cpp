@@ -592,6 +592,7 @@ int Socket::ResetFileDescriptor(int fd, size_t bound_gid) {
     EnableKeepaliveIfNeeded(fd);
 
     if (_on_edge_triggered_events) {
+#ifdef IO_URING_ENABLED
       if (_on_edge_triggered_events == InputMessenger::OnNewMessagesFromRing) {
         bthread_attr_t attr;
         attr = BTHREAD_ATTR_NORMAL;
@@ -606,13 +607,16 @@ int Socket::ResetFileDescriptor(int fd, size_t bound_gid) {
         bthread_start_from_bound_group(bound_gid, &tid, &attr, SocketRegister,
                                        this);
       } else {
+#endif
         if (GetGlobalEventDispatcher(fd).AddConsumer(id(), fd) != 0) {
           PLOG(ERROR) << "Fail to add SocketId=" << id()
                       << " into EventDispatcher";
           _fd.store(-1, butil::memory_order_release);
           return -1;
         }
+#ifdef IO_URING_ENABLED
       }
+#endif
     }
     return 0;
 }
@@ -1128,6 +1132,7 @@ void Socket::OnRecycle() {
     const int prev_fd = _fd.exchange(-1, butil::memory_order_relaxed);
     if (ValidFileDescriptor(prev_fd)) {
         if (_on_edge_triggered_events != NULL) {
+#ifdef IO_URING_ENABLED
             if (bound_g_ != nullptr) {
               assert(bound_g_ ==
                      BAIDU_GET_VOLATILE_THREAD_LOCAL(bthread::tls_task_group));
@@ -1136,8 +1141,11 @@ void Socket::OnRecycle() {
               reg_fd_idx_ = -1;
               reg_fd_ = -1;
             } else {
+#endif
                 GetGlobalEventDispatcher(prev_fd).RemoveConsumer(prev_fd);
+#ifdef IO_URING_ENABLED
             }
+#endif
         }
         close(prev_fd);
         if (create_by_connect) {
@@ -1195,6 +1203,7 @@ void* Socket::ProcessEvent(void* arg) {
     return NULL;
 }
 
+#ifdef IO_URING_ENABLED
 void *Socket::SocketProcess(void *arg) {
   bthread::TaskGroup *cur_group =
       BAIDU_GET_VOLATILE_THREAD_LOCAL(bthread::tls_task_group);
@@ -1255,6 +1264,7 @@ void Socket::SocketResume(Socket *sock, InboundRingBuf &rbuf,
     sock->ProcessInbound();
   }
 }
+#endif
 
 // Check if there're new requests appended.
 // If yes, point old_head to reversed new requests and return false;
@@ -1804,6 +1814,7 @@ int Socket::StartWrite(WriteRequest* req, const WriteOptions& opt) {
 #else
         {
 #endif
+#ifdef IO_URING_ENABLED
             bthread::TaskGroup *g =
                 BAIDU_GET_VOLATILE_THREAD_LOCAL(bthread::tls_task_group);
             if (g != nullptr) {
@@ -1815,7 +1826,7 @@ int Socket::StartWrite(WriteRequest* req, const WriteOptions& opt) {
                     return 0;
                 }
             }
-
+#endif
             nw = req->data.cut_into_file_descriptor(fd());
         }
     }
@@ -3017,6 +3028,7 @@ std::string Socket::description() const {
     return result;
 }
 
+#ifdef IO_URING_ENABLED
 void Socket::RingNonFixedWriteCb(int nw) {
     // Deferences the socket if the write request finishes.
     SocketUniquePtr sock(this);
@@ -3087,6 +3099,7 @@ void Socket::ProcessInbound() {
 }
 
 void Socket::SetFixedWriteLen(uint32_t write_len) { write_len_ = write_len; }
+#endif
 
 SocketSSLContext::SocketSSLContext()
     : raw_ctx(NULL)
