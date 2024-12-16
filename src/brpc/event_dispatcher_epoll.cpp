@@ -21,9 +21,12 @@
 #endif
 
 #include "bthread/task_control.h"
+#include "bthread/task_group.h"
+#include <unordered_map>
 
 extern "C" {
 extern void bthread_flush();
+extern bthread::TaskControl* bthread_get_task_control();
 };
 
 namespace bthread {
@@ -244,6 +247,8 @@ void* EventDispatcher::HandleEpollOut(void *arg)
 }
 
 void EventDispatcher::Run() {
+    std::unordered_map<uint64_t, bthread::TaskGroup *> sock_group;
+
     while (!_stop) {
         epoll_event e[32];
 #ifdef BRPC_ADDITIONAL_EPOLL

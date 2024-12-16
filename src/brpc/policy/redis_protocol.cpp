@@ -35,6 +35,7 @@
 #include "brpc/redis_command.h"
 #include "brpc/policy/redis_protocol.h"
 #include "bthread/task_group.h"
+#include "bthread/ring_write_buf_pool.h"
 
 namespace bthread {
 extern BAIDU_THREAD_LOCAL TaskGroup *tls_task_group;
@@ -176,6 +177,10 @@ ParseResult ParseRedisMessage(butil::IOBuf* source, Socket* socket,
             cur_group->update_ext_proc_(1);
             cur_task->SetBoundGroup(cur_group);
         }
+#ifdef IO_URING_ENABLED
+        auto [ring_buf, ring_buf_idx] = cur_group->GetRingWriteBuf();
+        appender.set_ring_buffer(ring_buf, RingWriteBufferPool::buf_length);
+#endif
 
         err = ctx->parser.Consume(*source, &current_args, &ctx->arena);
         if (err != PARSE_OK) {
@@ -201,9 +206,32 @@ ParseResult ParseRedisMessage(butil::IOBuf* source, Socket* socket,
         }
 
         cur_task->SetBoundGroup(NULL);
-
         butil::IOBuf sendbuf;
         appender.move_to(sendbuf);
+#ifdef IO_URING_ENABLED
+        uint32_t ring_buf_size = appender.ring_buffer_size();
+        if (ring_buf_size > 0) {
+          assert(sendbuf.empty());
+          socket->SetFixedWriteLen(ring_buf_size);
+          int ret = cur_group->SocketFixedWrite(socket, ring_buf_idx);
+          if (ret != 0) {
+            // If the fixed buffer write is not submitted,
+            // falls back to the old socket write.
+            sendbuf.append(ring_buf, ring_buf_size);
+            cur_group->RecycleRingWriteBuf(ring_buf_idx);
+          } else {
+            // The fixed buffer write is submitted successfully. The ring buffer
+            // will be recycled after the IO uring finishes the write request.
+          }
+        } else if (ring_buf != nullptr) {
+            cur_group->RecycleRingWriteBuf(ring_buf_idx);
+        }
+
+        if (ring_buf_size == 0) {
+            LOG(INFO) << "Redis socket write not using fixed buffer.";
+        }
+#endif
+
         if (!sendbuf.empty()) {
             Socket::WriteOptions wopt;
             wopt.ignore_eovercrowded = true;

@@ -31,6 +31,19 @@
 #include "butil/resource_pool.h"                    // ResourceId
 #include "bthread/parking_lot.h"
 
+#ifdef IO_URING_ENABLED
+#include "spsc_queue.h"
+#include "inbound_ring_buf.h"
+
+class RingWriteBufferPool;
+class RingListener;
+
+namespace brpc {
+class Socket;
+struct SocketInboundBuf;
+}
+#endif
+
 namespace bthread {
 
 // For exiting a bthread.
@@ -73,7 +86,8 @@ public:
     int start_background(bthread_t* __restrict tid,
                          const bthread_attr_t* __restrict attr,
                          void * (*fn)(void*),
-                         void* __restrict arg);
+                         void* __restrict arg,
+                         bool is_bound = false);
 
     // Suspend caller and run next bthread in TaskGroup *pg.
     static void sched(TaskGroup** pg);
@@ -200,6 +214,19 @@ public:
     std::function<bool(int16_t)> update_ext_proc_{nullptr};
     std::function<bool(bool)> override_shard_heap_{nullptr};
 
+#ifdef IO_URING_ENABLED
+    int RegisterSocket(brpc::Socket *sock);
+    void UnregisterSocket(int fd);
+    void SocketRecv(brpc::Socket *sock);
+    int SocketFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx);
+    int SocketNonFixedWrite(brpc::Socket *sock);
+    const char *GetRingReadBuf(uint16_t buf_id);
+    bool EnqueueInboundRingBuf(brpc::Socket *sock, int32_t bytes, uint16_t bid,
+                               bool rearm);
+    void RecycleRingReadBuf(uint16_t bid, int32_t bytes);
+    std::pair<char *, uint16_t> GetRingWriteBuf();
+    void RecycleRingWriteBuf(uint16_t buf_idx);
+#endif
   private:
     friend class TaskControl;
 
@@ -278,6 +305,11 @@ public:
     std::atomic<int> _remote_nsignaled{0};
 
     int _sched_recursive_guard;
+#ifdef IO_URING_ENABLED
+    std::unique_ptr<RingListener> ring_listener_{nullptr};
+    eloq::SpscQueue<InboundRingBuf> inbound_queue_;
+    std::array<InboundRingBuf, 128> inbound_batch_;
+#endif
 };
 
 }  // namespace bthread

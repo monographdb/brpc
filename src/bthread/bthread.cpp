@@ -157,6 +157,18 @@ start_from_non_worker(bthread_t* __restrict tid,
         tid, attr, fn, arg);
 }
 
+BUTIL_FORCE_INLINE int
+start_from_bound_group(size_t g_seed, bthread_t *__restrict tid,
+                       const bthread_attr_t *__restrict attr,
+                       void *(*fn)(void *), void *__restrict arg) {
+  TaskControl *c = get_or_new_task_control();
+  if (NULL == c) {
+    return ENOMEM;
+  }
+  return c->choose_group(g_seed)->start_background<true>(tid, attr, fn, arg,
+                                                         true);
+}
+
 struct TidTraits {
     static const size_t BLOCK_SIZE = 63;
     static const size_t MAX_ENTRIES = 65536;
@@ -463,5 +475,15 @@ int bthread_list_join(bthread_list_t* list) {
     static_cast<bthread::TidList*>(list->impl)->apply(bthread::TidJoiner());
     return 0;
 }
+
+bthread::TaskControl* bthread_get_task_control() {
+    return bthread::get_task_control();
+}
     
 }  // extern "C"
+
+int bthread_start_from_bound_group(size_t g_seed, bthread_t *__restrict tid,
+                                   const bthread_attr_t *__restrict attr,
+                                   void *(*fn)(void *), void *__restrict arg) {
+  return bthread::start_from_bound_group(g_seed, tid, attr, fn, arg);
+}
