@@ -105,13 +105,10 @@ public:
     // Channel nor Server. 
     int AddNonProtocolHandler(const InputMessageHandler& handler);
 
-public:
+protected:
     // Load data from m->fd() into m->read_buf, cut off new messages and
     // call callbacks.
     static void OnNewMessages(Socket* m);
-#ifdef IO_URING_ENABLED
-    static void OnNewMessagesFromRing(Socket *m);
-#endif
     
 private:
     class InputMessageClosure {
