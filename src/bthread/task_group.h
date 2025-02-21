@@ -227,6 +227,8 @@ public:
     std::function<bool(bool)> override_shard_heap_{nullptr};
     std::function<bool()> has_tx_processor_work_{nullptr};
 
+    std::array<bthread::BrpcModule *, 10> registered_modules_{};
+
 #ifdef IO_URING_ENABLED
     bool RingListenerNotify();
     int RegisterSocket(brpc::Socket *sock);
@@ -237,8 +239,6 @@ public:
     int SocketWaitingNonFixedWrite(brpc::Socket *sock);
     int RingFsync(int fd);
     const char *GetRingReadBuf(uint16_t buf_id);
-    bool EnqueueInboundRingBuf(brpc::Socket *sock, int32_t bytes, uint16_t bid,
-                               bool rearm);
     void RecycleRingReadBuf(uint16_t bid, int32_t bytes);
     std::pair<char *, uint16_t> GetRingWriteBuf();
     void RecycleRingWriteBuf(uint16_t buf_idx);
@@ -301,6 +301,18 @@ public:
 
     void RunExtTxProcTask();
 
+    void ProcessModulesTask();
+
+    bool HasTasks();
+
+    enum struct WorkerStatus
+    {
+        Sleep = 0,
+        Working = 1,
+    };
+
+    void NotifyRegisteredModules(WorkerStatus status);
+
     TaskMeta* _cur_meta;
     
     // the control that this group belongs to
@@ -341,8 +353,6 @@ public:
 #ifdef IO_URING_ENABLED
     std::atomic<bool> signaled_by_ring_{false};
     std::unique_ptr<RingListener> ring_listener_{nullptr};
-    eloq::SpscQueue<InboundRingBuf> inbound_queue_;
-    std::array<InboundRingBuf, 128> inbound_batch_;
 #endif
 };
 

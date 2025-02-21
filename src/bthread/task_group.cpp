@@ -37,6 +37,7 @@
 #include "bthread/timer_thread.h"
 #include "bthread/errno.h"
 #include "task_meta.h"
+#include "bthread/brpc_module.h"
 #ifdef IO_URING_ENABLED
 #include <liburing.h>
 #include "ring_write_buf_pool.h"
@@ -50,6 +51,9 @@ std::function<std::tuple<std::function<void()>,
         get_tx_proc_functors{nullptr};
 
 std::atomic<bool> tx_proc_functors_set{false};
+
+std::array<bthread::BrpcModule *, 10> registered_modules;
+std::atomic<int> registered_module_cnt;
 
 DEFINE_int32(steal_task_rnd, 100, "Steal task frequency in wait_task");
 DEFINE_bool(brpc_worker_as_ext_processor, false, "Work as external processor");
@@ -155,17 +159,11 @@ bool TaskGroup::wait_task(bthread_t* tid) {
             RunExtTxProcTask();
         }
 
+        ProcessModulesTask();
+
 #ifdef IO_URING_ENABLED
         if (FLAGS_use_io_uring && ring_listener_ != nullptr) {
             size_t ring_poll_cnt = ring_listener_->ExtPoll();
-
-            size_t cnt = inbound_queue_.TryDequeueBulk(inbound_batch_.begin(),
-                                                       inbound_batch_.size());
-            for (size_t idx = 0; idx < cnt; ++idx) {
-                InboundRingBuf &rbuf = inbound_batch_[idx];
-                brpc::Socket *sock = rbuf.sock_;
-                brpc::Socket::SocketResume(sock, rbuf, this);
-            }
         }
 #endif
 
@@ -209,7 +207,11 @@ bool TaskGroup::wait_task(bthread_t* tid) {
                     ring_listener_->ExtWakeup();
                 }
 #endif
+                NotifyRegisteredModules(WorkerStatus::Sleep);
+
                 Wait();
+
+                NotifyRegisteredModules(WorkerStatus::Working);
 
                 if (update_ext_proc_) {
                     update_ext_proc_(1);
@@ -287,9 +289,6 @@ TaskGroup::TaskGroup(TaskControl* c)
     , _remote_nsignaled(0)
 #ifndef NDEBUG
     , _sched_recursive_guard(0)
-#endif
-#ifdef IO_URING_ENABLED
-    , inbound_queue_(1024)
 #endif
 {
     _steal_seed = butil::fast_rand();
@@ -1278,6 +1277,7 @@ bool TaskGroup::Wait(){
             }
         }
         return !NoTasks();
+        return HasTasks();
     });
 #ifdef IO_URING_ENABLED
     signaled_by_ring_.store(false, std::memory_order_relaxed);
@@ -1293,6 +1293,46 @@ void TaskGroup::RunExtTxProcTask() {
     }
     if (tx_processor_exec_) {
         tx_processor_exec_();
+    }
+}
+
+void TaskGroup::ProcessModulesTask() {
+    if (registered_modules_.size() < registered_module_cnt.load(std::memory_order_acquire)) {
+        registered_modules_ = registered_modules;
+        bool sleep = false;
+        NotifyRegisteredModules(WorkerStatus::Working);
+    }
+    for (auto *module : registered_modules_) {
+        if (module != nullptr) {
+            module->Process(group_id_);
+        }
+    }
+}
+
+bool TaskGroup::HasTasks() {
+    if (!_remote_rq.empty() || !_bound_rq.empty()) {
+        return true;
+    }
+    if (registered_modules_.size() < registered_module_cnt.load(std::memory_order_acquire)) {
+        registered_modules_ = registered_modules;
+    }
+    for (bthread::BrpcModule *module : registered_modules_) {
+        if (module != nullptr && module->HasTask(group_id_)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void TaskGroup::NotifyRegisteredModules(WorkerStatus status) {
+    for (bthread::BrpcModule *module : registered_modules_) {
+        if (module != nullptr) {
+            if (status == WorkerStatus::Sleep) {
+                module->ExtThdEnd(group_id_);
+            } else {
+                module->ExtThdStart(group_id_);
+            }
+        }
     }
 }
 
@@ -1386,14 +1426,6 @@ int TaskGroup::RingFsync(int fd) {
 
 const char *TaskGroup::GetRingReadBuf(uint16_t buf_id) {
   return ring_listener_->GetReadBuf(buf_id);
-}
-
-bool TaskGroup::EnqueueInboundRingBuf(brpc::Socket *sock, int32_t bytes,
-                                      uint16_t bid, bool rearm) {
-  bool success =
-      inbound_queue_.TryEnqueue(InboundRingBuf(sock, bytes, bid, rearm));
-  _control->signal_group(group_id_);
-  return success;
 }
 
 void TaskGroup::RecycleRingReadBuf(uint16_t bid, int32_t bytes) {
