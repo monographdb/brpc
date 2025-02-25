@@ -44,7 +44,7 @@ extern int bthread_set_ext_tx_prc_func(
                 std::function<bool(bool)>,
                 std::function<bool()>>(int16_t)>);
 
-extern int bthread_register_module(bthread::BrpcModule *module);
+extern int register_module(eloq::EloqModule *module);
 
 // Create bthread `fn(args)' with attributes `attr' and put the identifier into
 // `tid'. Switch to the new thread and schedule old thread to run. Use this

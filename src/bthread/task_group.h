@@ -34,8 +34,6 @@
 #include "bthread/parking_lot.h"
 
 #ifdef IO_URING_ENABLED
-#include "spsc_queue.h"
-#include "inbound_ring_buf.h"
 
 class RingWriteBufferPool;
 class RingListener;
@@ -227,7 +225,7 @@ public:
     std::function<bool(bool)> override_shard_heap_{nullptr};
     std::function<bool()> has_tx_processor_work_{nullptr};
 
-    std::array<bthread::BrpcModule *, 10> registered_modules_{};
+    std::array<eloq::EloqModule *, 10> registered_modules_{};
 
 #ifdef IO_URING_ENABLED
     bool RingListenerNotify();

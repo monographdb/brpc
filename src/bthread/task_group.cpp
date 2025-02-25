@@ -52,7 +52,7 @@ std::function<std::tuple<std::function<void()>,
 
 std::atomic<bool> tx_proc_functors_set{false};
 
-std::array<bthread::BrpcModule *, 10> registered_modules;
+std::array<eloq::EloqModule *, 10> registered_modules;
 std::atomic<int> registered_module_cnt;
 
 DEFINE_int32(steal_task_rnd, 100, "Steal task frequency in wait_task");
@@ -209,7 +209,9 @@ bool TaskGroup::wait_task(bthread_t* tid) {
 #endif
                 NotifyRegisteredModules(WorkerStatus::Sleep);
 
+                LOG(INFO) << "group: " << group_id_ << " wait...";
                 Wait();
+                LOG(INFO) << "group: " << group_id_ << " wait done";
 
                 NotifyRegisteredModules(WorkerStatus::Working);
 
@@ -1276,8 +1278,8 @@ bool TaskGroup::Wait(){
                 update_ext_proc_(-1);
             }
         }
-        return !NoTasks();
         return HasTasks();
+        return !NoTasks();
     });
 #ifdef IO_URING_ENABLED
     signaled_by_ring_.store(false, std::memory_order_relaxed);
@@ -1297,13 +1299,22 @@ void TaskGroup::RunExtTxProcTask() {
 }
 
 void TaskGroup::ProcessModulesTask() {
-    if (registered_modules_.size() < registered_module_cnt.load(std::memory_order_acquire)) {
+    int registered_modules_cnt = 0;
+    for (auto *module : registered_modules_) {
+        if (module != nullptr) {
+            registered_modules_cnt++;
+        } else {
+            break;
+        }
+    }
+    if (registered_modules_cnt < registered_module_cnt.load(std::memory_order_acquire)) {
+        LOG(INFO) << "group: " << group_id_ << " registered modules size: " << registered_modules_cnt;
         registered_modules_ = registered_modules;
-        bool sleep = false;
         NotifyRegisteredModules(WorkerStatus::Working);
     }
     for (auto *module : registered_modules_) {
         if (module != nullptr) {
+            // LOG(INFO) << "group: " << group_id_ << " Process, module: " << module;
             module->Process(group_id_);
         }
     }
@@ -1316,7 +1327,7 @@ bool TaskGroup::HasTasks() {
     if (registered_modules_.size() < registered_module_cnt.load(std::memory_order_acquire)) {
         registered_modules_ = registered_modules;
     }
-    for (bthread::BrpcModule *module : registered_modules_) {
+    for (eloq::EloqModule *module : registered_modules_) {
         if (module != nullptr && module->HasTask(group_id_)) {
             return true;
         }
@@ -1325,7 +1336,7 @@ bool TaskGroup::HasTasks() {
 }
 
 void TaskGroup::NotifyRegisteredModules(WorkerStatus status) {
-    for (bthread::BrpcModule *module : registered_modules_) {
+    for (eloq::EloqModule *module : registered_modules_) {
         if (module != nullptr) {
             if (status == WorkerStatus::Sleep) {
                 module->ExtThdEnd(group_id_);

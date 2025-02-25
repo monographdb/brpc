@@ -20,18 +20,17 @@
 #ifndef BRPC_MODULE_H
 #define BRPC_MODULE_H
 
-namespace bthread {
+namespace eloq {
 
-class BrpcModule {
+class EloqModule {
 public:
-    virtual ~BrpcModule() {};
+    virtual ~EloqModule() {};
 
     virtual void ExtThdStart(int thd_id) = 0;
     virtual void ExtThdEnd(int thd_id) = 0;
     virtual void Process(int thd_id) = 0;
     virtual bool HasTask(int thd_id) const = 0;
 
-private:
     static bool NotifyWorker(int thd_id);
 };
 

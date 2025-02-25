@@ -51,18 +51,22 @@ int bthread_set_ext_tx_prc_func(
     return -1;
 }
 
-extern std::array<bthread::BrpcModule *, 10> registered_modules;
+extern std::array<eloq::EloqModule *, 10> registered_modules;
 extern std::atomic<int> registered_module_cnt;
 
-int bthread_register_module(bthread::BrpcModule *module) {
+int register_module(eloq::EloqModule *module) {
     static std::mutex module_mutex;
     std::unique_lock<std::mutex> lk(module_mutex);
     size_t i = 0;
     while (i < registered_modules.size() && registered_modules[i] != nullptr) {
+        // Each module should only be registered once.
+        CHECK(registered_modules[i] != module);
         i++;
     }
     registered_modules[i] = module;
     registered_module_cnt.fetch_add(1, std::memory_order_release);
+    LOG(INFO) << "register module, module: " << module
+    << " registered_module_cnt: " << registered_module_cnt.load();
     return 0;
 }
 
@@ -468,6 +472,7 @@ int bthread_notify_worker(int group_id) {
     if (c == nullptr) {
         return 0;
     }
+    LOG(INFO) << "notify group: " << group_id;
     return c->signal_group(group_id);
 }
 
