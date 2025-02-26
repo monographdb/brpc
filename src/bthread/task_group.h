@@ -226,6 +226,7 @@ public:
     std::function<bool()> has_tx_processor_work_{nullptr};
 
     std::array<eloq::EloqModule *, 10> registered_modules_{};
+    int modules_cnt_{0};
 
 #ifdef IO_URING_ENABLED
     bool RingListenerNotify();
@@ -302,6 +303,8 @@ public:
     void ProcessModulesTask();
 
     bool HasTasks();
+
+    bool CheckAndUpdateModules();
 
     enum struct WorkerStatus
     {

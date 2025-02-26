@@ -197,7 +197,7 @@ bool TaskGroup::wait_task(bthread_t* tid) {
         // keep polling for some time before waiting on parking lot
         if (FLAGS_worker_polling_time_us <= 0 ||
             butil::cpuwide_time_us() - poll_start_us > FLAGS_worker_polling_time_us) {
-            if (NoTasks()) {
+            if (!HasTasks()) {
                 if (update_ext_proc_) {
                     update_ext_proc_(-1);
                 }
@@ -210,8 +210,10 @@ bool TaskGroup::wait_task(bthread_t* tid) {
                 NotifyRegisteredModules(WorkerStatus::Sleep);
 
                 LOG(INFO) << "group: " << group_id_ << " wait...";
+                auto start_ms = butil::cpuwide_time_ms();
                 Wait();
-                LOG(INFO) << "group: " << group_id_ << " wait done";
+                LOG(INFO) << "group: " << group_id_ << " wait finishes after: "
+                    << butil::cpuwide_time_ms() - start_ms << " ms";
 
                 NotifyRegisteredModules(WorkerStatus::Working);
 
@@ -703,8 +705,8 @@ void TaskGroup::ending_sched(TaskGroup** pg) {
     const bool popped = g->_rq.steal(&next_tid);
 #endif
     if (!popped) {
-        // Yield proactively to run tx processor workload.
-        if (g->tx_processor_exec_ && g->_processed_tasks > 30) {
+        // Yield proactively to run modules workload.
+        if (g->modules_cnt_ > 0 && g->_processed_tasks > 30) {
             g->_processed_tasks = 0;
             next_tid = g->_main_tid;
         } else {
@@ -754,8 +756,8 @@ void TaskGroup::sched(TaskGroup** pg) {
     const bool popped = g->_rq.steal(&next_tid);
 #endif
     if (!popped) {
-        // Yield proactively to run tx processor workload.
-        if (g->tx_processor_exec_ && g->_processed_tasks > 30) {
+        // Yield proactively to run modules workload.
+        if (g->modules_cnt_ > 0 && g->_processed_tasks > 30) {
             g->_processed_tasks = 0;
             next_tid = g->_main_tid;
         } else {
@@ -1278,8 +1280,10 @@ bool TaskGroup::Wait(){
                 update_ext_proc_(-1);
             }
         }
+        // Check any new module registered before checking modules' tasks.
+        CheckAndUpdateModules();
+
         return HasTasks();
-        return !NoTasks();
     });
 #ifdef IO_URING_ENABLED
     signaled_by_ring_.store(false, std::memory_order_relaxed);
@@ -1299,17 +1303,7 @@ void TaskGroup::RunExtTxProcTask() {
 }
 
 void TaskGroup::ProcessModulesTask() {
-    int registered_modules_cnt = 0;
-    for (auto *module : registered_modules_) {
-        if (module != nullptr) {
-            registered_modules_cnt++;
-        } else {
-            break;
-        }
-    }
-    if (registered_modules_cnt < registered_module_cnt.load(std::memory_order_acquire)) {
-        LOG(INFO) << "group: " << group_id_ << " registered modules size: " << registered_modules_cnt;
-        registered_modules_ = registered_modules;
+    if (CheckAndUpdateModules()) {
         NotifyRegisteredModules(WorkerStatus::Working);
     }
     for (auto *module : registered_modules_) {
@@ -1324,16 +1318,26 @@ bool TaskGroup::HasTasks() {
     if (!_remote_rq.empty() || !_bound_rq.empty()) {
         return true;
     }
-    if (registered_modules_.size() < registered_module_cnt.load(std::memory_order_acquire)) {
+    bool has_task = std::any_of(registered_modules_.begin(), registered_modules_.end(),
+        [this](eloq::EloqModule* module) {
+            return module != nullptr && module->HasTask(group_id_);
+    });
+
+    return has_task;
+}
+
+bool TaskGroup::CheckAndUpdateModules() {
+    if (modules_cnt_ < registered_module_cnt.load(std::memory_order_acquire)) {
         registered_modules_ = registered_modules;
-    }
-    for (eloq::EloqModule *module : registered_modules_) {
-        if (module != nullptr && module->HasTask(group_id_)) {
-            return true;
-        }
+        modules_cnt_ = std::count_if(registered_modules_.begin(), registered_modules_.end(), [](auto* module) {
+            return module != nullptr;
+        });
+        LOG(INFO) << "group: " << group_id_ << " registered modules size: " << modules_cnt_;
+        return true;
     }
     return false;
 }
+
 
 void TaskGroup::NotifyRegisteredModules(WorkerStatus status) {
     for (eloq::EloqModule *module : registered_modules_) {
