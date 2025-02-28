@@ -209,11 +209,11 @@ bool TaskGroup::wait_task(bthread_t* tid) {
 #endif
                 NotifyRegisteredModules(WorkerStatus::Sleep);
 
-                LOG(INFO) << "group: " << group_id_ << " wait...";
-                auto start_ms = butil::cpuwide_time_ms();
+                // LOG(INFO) << "group: " << group_id_ << " wait...";
+                // auto start_ms = butil::cpuwide_time_ms();
                 Wait();
-                LOG(INFO) << "group: " << group_id_ << " wait finishes after: "
-                    << butil::cpuwide_time_ms() - start_ms << " ms";
+                // LOG(INFO) << "group: " << group_id_ << " wait finishes after: "
+                //     << butil::cpuwide_time_ms() - start_ms << " ms";
 
                 NotifyRegisteredModules(WorkerStatus::Working);
 

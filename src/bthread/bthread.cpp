@@ -472,7 +472,7 @@ int bthread_notify_worker(int group_id) {
     if (c == nullptr) {
         return 0;
     }
-    LOG(INFO) << "notify group: " << group_id;
+    // LOG(INFO) << "notify group: " << group_id;
     return c->signal_group(group_id);
 }
 

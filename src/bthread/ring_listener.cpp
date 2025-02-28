@@ -353,7 +353,7 @@ void RingListener::PollAndNotify() {
     }
     cqe_ready_.store(true, std::memory_order_relaxed);
     poll_status_.store(PollStatus::Sleep, std::memory_order_relaxed);
-    LOG(INFO) << "RingModule notify worker: " << task_group_->group_id_;
+    // LOG(INFO) << "RingModule notify worker: " << task_group_->group_id_;
     RingModule::NotifyWorker(task_group_->group_id_);
 }
 
