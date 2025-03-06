@@ -28,10 +28,6 @@
 
 #include "ring_listener.h"
 
-// namespace bthread {
-//     extern TaskControl *get_task_control();
-// }
-
 RingListener::~RingListener() {
     for (auto [fd, fd_idx]: reg_fds_) {
         SubmitCancel(fd);
@@ -92,8 +88,6 @@ int RingListener::Init() {
     io_uring_buf_ring_advance(in_buf_ring_, buf_ring_size);
 
     write_buf_pool_ = std::make_unique<RingWriteBufferPool>(1024, &ring_);
-
-    // ring_module_ = bthread::get_task_control()->get_ring_module();
 
     poll_status_.store(PollStatus::Sleep, std::memory_order_release);
     poll_thd_ = std::thread([&]() {
