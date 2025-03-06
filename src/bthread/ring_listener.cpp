@@ -422,24 +422,6 @@ void RingListener::Run() {
                    PollStatus::Closed;
         });
     }
-    // while (poll_status_.load(std::memory_order_relaxed) != PollStatus::Closed) {
-    //     if (reg_cnt_.load(std::memory_order_acquire) > 0 &&
-    //         !has_external_.load(std::memory_order_relaxed)) {
-    //         PollStatus status = PollStatus::Sleep;
-    //         if (poll_status_.compare_exchange_strong(status, PollStatus::Active,
-    //                                                  std::memory_order_acq_rel)) {
-    //             PollAndNotify();
-    //         }
-    //     }
-    //     poll_status_.store(PollStatus::Sleep, std::memory_order_acq_rel);
-    //     std::unique_lock<std::mutex> lk(mux_);
-    //     cv_.wait(lk, [this]() {
-    //         return (reg_cnt_.load(std::memory_order_acquire) > 0 &&
-    //                 !has_external_.load(std::memory_order_relaxed)) ||
-    //                poll_status_.load(std::memory_order_relaxed) ==
-    //                PollStatus::Closed;
-    //     });
-    // }
 }
 
 void RingListener::RecycleReadBuf(uint16_t bid, size_t bytes) {

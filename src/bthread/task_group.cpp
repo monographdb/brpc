@@ -1329,7 +1329,7 @@ bool TaskGroup::HasTasks() {
 bool TaskGroup::CheckAndUpdateModules() {
     if (modules_cnt_ < registered_module_cnt.load(std::memory_order_acquire)) {
         registered_modules_ = registered_modules;
-        modules_cnt_ = std::count_if(registered_modules_.begin(), registered_modules_.end(), [](auto* module) {
+        modules_cnt_ = std::count_if(registered_modules_.begin(), registered_modules_.end(), [](eloq::EloqModule* module) {
             return module != nullptr;
         });
         LOG(INFO) << "group: " << group_id_ << " registered modules size: " << modules_cnt_;
