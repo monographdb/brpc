@@ -65,8 +65,6 @@ int register_module(eloq::EloqModule *module) {
     }
     registered_modules[i] = module;
     registered_module_cnt.fetch_add(1, std::memory_order_release);
-    LOG(INFO) << "register module, module: " << module
-    << " registered_module_cnt: " << registered_module_cnt.load();
     return 0;
 }
 
@@ -472,7 +470,6 @@ int bthread_notify_worker(int group_id) {
     if (c == nullptr) {
         return 0;
     }
-    // LOG(INFO) << "notify group: " << group_id;
     return c->signal_group(group_id);
 }
 

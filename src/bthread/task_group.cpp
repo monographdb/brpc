@@ -209,11 +209,7 @@ bool TaskGroup::wait_task(bthread_t* tid) {
 #endif
                 NotifyRegisteredModules(WorkerStatus::Sleep);
 
-                // LOG(INFO) << "group: " << group_id_ << " wait...";
-                // auto start_ms = butil::cpuwide_time_ms();
                 Wait();
-                // LOG(INFO) << "group: " << group_id_ << " wait finishes after: "
-                //     << butil::cpuwide_time_ms() - start_ms << " ms";
 
                 NotifyRegisteredModules(WorkerStatus::Working);
 
@@ -1287,7 +1283,6 @@ void TaskGroup::ProcessModulesTask() {
     }
     for (auto *module : registered_modules_) {
         if (module != nullptr) {
-            // LOG(INFO) << "group: " << group_id_ << " Process, module: " << module;
             module->Process(group_id_);
         }
     }
@@ -1311,7 +1306,6 @@ bool TaskGroup::CheckAndUpdateModules() {
         modules_cnt_ = std::count_if(registered_modules_.begin(), registered_modules_.end(), [](eloq::EloqModule* module) {
             return module != nullptr;
         });
-        LOG(INFO) << "group: " << group_id_ << " registered modules size: " << modules_cnt_;
         return true;
     }
     return false;

@@ -30,7 +30,6 @@ void RingModule::ExtThdStart(int thd_id) {
 void RingModule::ExtThdEnd(int thd_id) { listeners_.at(thd_id)->ExtWakeup(); }
 
 void RingModule::Process(int thd_id) {
-    // LOG(INFO) << "Process thd_id: " << thd_id;
     listeners_.at(thd_id)->ExtPoll();
 }
 
@@ -41,10 +40,6 @@ bool RingModule::HasTask(int thd_id) const {
 
 void RingModule::AddListener(int thd_id, RingListener *listener) {
     // protected by TaskControl::_modify_group_mutex
-    // if (listeners_.size() < thd_id) {
-    //     listeners_.resize(thd_id);
-    // }
-    LOG(INFO) << "AddListener, thdid: " << thd_id << ", listener: " << listener;
     listeners_[thd_id] = listener;
 }
 

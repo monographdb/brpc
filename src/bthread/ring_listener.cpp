@@ -19,7 +19,6 @@
 
 #ifdef IO_URING_ENABLED
 #include "brpc/socket.h"
-// #include "bthread/task_control.h"
 #include "bthread/task_group.h"
 #include "bthread/brpc_module.h"
 #include "bthread/inbound_ring_buf.h"
@@ -347,13 +346,11 @@ void RingListener::PollAndNotify() {
     }
     cqe_ready_.store(true, std::memory_order_relaxed);
     poll_status_.store(PollStatus::Sleep, std::memory_order_relaxed);
-    // LOG(INFO) << "RingModule notify worker: " << task_group_->group_id_;
     RingModule::NotifyWorker(task_group_->group_id_);
 }
 
 
 size_t RingListener::ExtPoll() {
-    // LOG(INFO) << "RingListener::ExtPoll, group: " << task_group_->group_id_;
     if (!has_external_.load(std::memory_order_relaxed)) {
         has_external_.store(true, std::memory_order_release);
     }
