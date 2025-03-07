@@ -1236,30 +1236,12 @@ void print_task(std::ostream& os, bthread_t tid) {
 }
 
 bool TaskGroup::Notify() {
-    if (!_waiting.load(std::memory_order_acquire)) {
+    if (!_waiting.load(std::memory_order_relaxed)) {
         return false;
     }
     std::unique_lock<std::mutex> lk(_mux);
     _cv.notify_one();
     return true;
-}
-
-bool TaskGroup::NoTasks() {
-    bool has_external_task =
-        has_tx_processor_work_ != nullptr && has_tx_processor_work_();
-    bool has_ring_task = false;
-#ifdef IO_URING_ENABLED
-    if (FLAGS_use_io_uring) {
-        bool has_jobs_to_submit = ring_listener_ != nullptr && ring_listener_->HasJobsToSubmit();
-        bool wakeup_by_ring_listener = signaled_by_ring_.load(std::memory_order_relaxed);
-        if (wakeup_by_ring_listener) {
-            signaled_by_ring_.store(false, std::memory_order_relaxed);
-        }
-        has_ring_task = has_jobs_to_submit || wakeup_by_ring_listener;
-    }
-#endif
-    return _remote_rq.empty() && _bound_rq.empty() && !has_ring_task &&
-           !has_external_task;
 }
 
 bool TaskGroup::Wait(){
@@ -1285,9 +1267,6 @@ bool TaskGroup::Wait(){
 
         return HasTasks();
     });
-#ifdef IO_URING_ENABLED
-    signaled_by_ring_.store(false, std::memory_order_relaxed);
-#endif
     _waiting.store(false, std::memory_order_release);
     _waiting_workers.fetch_sub(1, std::memory_order_relaxed);
     return true;
@@ -1368,11 +1347,6 @@ bool TaskGroup::TrySetExtTxProcFuncs() {
 }
 
 #ifdef IO_URING_ENABLED
-bool TaskGroup::RingListenerNotify() {
-    signaled_by_ring_.store(true, std::memory_order_relaxed);
-    return Notify();
-}
-
 int TaskGroup::RegisterSocket(brpc::Socket *sock) {
     return ring_listener_->Register(sock);
 }

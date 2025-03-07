@@ -229,7 +229,6 @@ public:
     int modules_cnt_{0};
 
 #ifdef IO_URING_ENABLED
-    bool RingListenerNotify();
     int RegisterSocket(brpc::Socket *sock);
     void UnregisterSocket(int fd);
     void SocketRecv(brpc::Socket *sock);
@@ -294,8 +293,6 @@ public:
         return _control->steal_task(tid, &_steal_seed, _steal_offset);
     }
 
-    bool NoTasks();
-
     bool Wait();
 
     void RunExtTxProcTask();
@@ -352,7 +349,6 @@ public:
     std::condition_variable _cv;
 
 #ifdef IO_URING_ENABLED
-    std::atomic<bool> signaled_by_ring_{false};
     std::unique_ptr<RingListener> ring_listener_{nullptr};
 #endif
 };
