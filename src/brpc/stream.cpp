@@ -336,14 +336,16 @@ void Stream::SetRemoteConsumed(size_t new_remote_consumed) {
         _host_socket->_total_streams_unconsumed_size -= new_remote_consumed - remote_consumed;
         if (_host_socket->_total_streams_unconsumed_size > FLAGS_socket_max_streams_unconsumed_bytes) {
             if (_options.min_buf_size > 0) {
+                cur_buf_size = _options.min_buf_size;
                 _cur_buf_size.store(_options.min_buf_size, std::memory_order_relaxed);
             } else {
                 cur_buf_size /= 2;
-                _cur_buf_size.store(_options.min_buf_size, std::memory_order_relaxed);
+                _cur_buf_size.store(cur_buf_size, std::memory_order_relaxed);
             }
             LOG(INFO) << "stream consumers on socket " << _host_socket->id() << " is crowded, " <<  "cut stream " << id() << " buffer to " << cur_buf_size;
         } else if (produced >= new_remote_consumed + cur_buf_size && (_options.max_buf_size <= 0 || cur_buf_size < (size_t)_options.max_buf_size)) {
             if (_options.max_buf_size > 0 && cur_buf_size * 2 > (size_t)_options.max_buf_size) {
+                cur_buf_size = _options.max_buf_size;
                 _cur_buf_size.store(_options.max_buf_size, std::memory_order_relaxed);
             } else {
                 cur_buf_size *= 2;
@@ -352,6 +354,7 @@ void Stream::SetRemoteConsumed(size_t new_remote_consumed) {
         }
     }
 
+    remote_consumed = new_remote_consumed;
     _remote_consumed.store(new_remote_consumed, std::memory_order_relaxed);
     const bool is_full = produced >= remote_consumed + cur_buf_size;
     if (was_full && !is_full) {
