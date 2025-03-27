@@ -351,6 +351,12 @@ public:
             {}
 #endif
     };
+
+#ifdef IO_URING_ENABLED
+    int Write(const char *ring_buf, uint16_t ring_buf_idx, uint32_t ring_buf_size,
+        const WriteOptions* options = NULL);
+#endif
+
     int Write(butil::IOBuf *msg, const WriteOptions* options = NULL);
 
     // Write an user-defined message. `msg' is released when Write() is

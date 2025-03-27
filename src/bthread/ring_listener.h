@@ -87,7 +87,7 @@ public:
 
     int SubmitRecv(brpc::Socket *sock);
 
-    int SubmitFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx);
+    int SubmitFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, uint32_t ring_buf_size);
 
     int SubmitNonFixedWrite(brpc::Socket *sock);
 
@@ -142,6 +142,7 @@ private:
         Recv = 0,
         CancelRecv,
         RegisterFile,
+        // TODO(zkl): merge FixedWrite and NonFixedWrite
         FixedWrite,
         FixedWriteFinish,
         NonFixedWrite,
@@ -203,7 +204,7 @@ private:
 
     void HandleRecv(brpc::Socket *sock, io_uring_cqe *cqe);
 
-    void HandleFixedWrite(brpc::Socket *sock, int nw, uint16_t write_buf_idx);
+    // void HandleFixedWrite(brpc::Socket *sock, int nw, uint16_t write_buf_idx);
 
     void HandleBacklog();
 

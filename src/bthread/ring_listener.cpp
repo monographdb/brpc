@@ -163,7 +163,7 @@ int RingListener::SubmitRecv(brpc::Socket *sock) {
     return 0;
 }
 
-int RingListener::SubmitFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx) {
+int RingListener::SubmitFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, uint32_t ring_buf_size) {
     io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
     if (sqe == nullptr) {
         LOG(ERROR)
@@ -186,8 +186,8 @@ int RingListener::SubmitFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx) {
     const char *write_buf = write_buf_pool_->GetBuf(ring_buf_idx);
     sock->write_buf_idx_ = ring_buf_idx;
 
-    io_uring_prep_write_fixed(sqe, sfd, write_buf, sock->write_len_, 0,
-                              ring_buf_idx);
+    // LOG(INFO) << "io_uring_prep_write_fixed, len: " << ring_buf_size << ", buf_idx: " << ring_buf_idx;
+    io_uring_prep_write_fixed(sqe, sfd, write_buf, ring_buf_size, 0, ring_buf_idx);
 
     uint64_t data = reinterpret_cast<uint64_t>(sock);
     data = data << 16;
@@ -536,11 +536,7 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
             SubmitRecv(sock);
             break;
         }
-        case OpCode::FixedWrite: {
-            brpc::Socket *sock = reinterpret_cast<brpc::Socket *>(data >> 16);
-            HandleFixedWrite(sock, cqe->res, sock->write_buf_idx_);
-            break;
-        }
+        case OpCode::FixedWrite:
         case OpCode::NonFixedWrite: {
             brpc::Socket *sock = reinterpret_cast<brpc::Socket *>(data >> 16);
             sock->RingNonFixedWriteCb(cqe->res);
@@ -606,50 +602,50 @@ void RingListener::HandleRecv(brpc::Socket *sock, io_uring_cqe *cqe) {
     brpc::Socket::SocketResume(sock, in_buf, task_group_);
 }
 
-void RingListener::HandleFixedWrite(brpc::Socket *sock, int nw, uint16_t write_buf_idx) {
-    // Fixed write finished. Deferences the socket, until the write is retried.
-    brpc::SocketUniquePtr sock_uptr(sock);
-
-    if (nw >= 0) {
-        CHECK(sock->write_len_ >= nw);
-        sock->write_len_ -= nw;
-        if (sock->write_len_ == 0) {
-            // Data fully written, recycle the write buffer.
-            RecycleWriteBuf(write_buf_idx);
-            return;
-        }
-        // Data not fully written, shift the data and submit again.
-        const char *write_buf = write_buf_pool_->GetBuf(write_buf_idx);
-        std::memmove(const_cast<char *>(write_buf), write_buf + nw, sock->write_len_);
-        int ret = SubmitFixedWrite(sock, write_buf_idx);
-        if (ret == 0) {
-            // Does not dereference the socket because the write is retried.
-            (void) sock_uptr.release();
-        } else {
-            // TODO(zkl)
-        }
-    } else {
-        // Fixed write failed. If the errorno is EAGAIN, retries the write.
-        LOG(ERROR) << "fixed write error, sock: " << *sock
-                << ", errno: " << -nw;
-        int err = -nw;
-        if (err == EAGAIN) {
-            int ret = SubmitFixedWrite(sock, write_buf_idx);
-            if (ret == 0) {
-                // Does not dereference the socket because the write is retried.
-                (void) sock_uptr.release();
-            } else {
-                // TODO(zkl)
-            }
-        } else {
-            // EPIPE is common in pooled connections + backup requests.
-            PLOG_IF(WARNING, err != EPIPE) << "Fail to write into " << *sock;
-            sock->SetFailed(err, "Fail to write into %s: %s",
-                            sock->description().c_str(), berror(err));
-            RecycleWriteBuf(write_buf_idx);
-        }
-    }
-}
+// void RingListener::HandleFixedWrite(brpc::Socket *sock, int nw, uint16_t write_buf_idx) {
+//     // Fixed write finished. Deferences the socket, until the write is retried.
+//     brpc::SocketUniquePtr sock_uptr(sock);
+//
+//     if (nw >= 0) {
+//         CHECK(sock->write_len_ >= nw);
+//         sock->write_len_ -= nw;
+//         if (sock->write_len_ == 0) {
+//             // Data fully written, recycle the write buffer.
+//             RecycleWriteBuf(write_buf_idx);
+//             return;
+//         }
+//         // Data not fully written, shift the data and submit again.
+//         const char *write_buf = write_buf_pool_->GetBuf(write_buf_idx);
+//         std::memmove(const_cast<char *>(write_buf), write_buf + nw, sock->write_len_);
+//         int ret = SubmitFixedWrite(sock, write_buf_idx);
+//         if (ret == 0) {
+//             // Does not dereference the socket because the write is retried.
+//             (void) sock_uptr.release();
+//         } else {
+//             // TODO(zkl)
+//         }
+//     } else {
+//         // Fixed write failed. If the errorno is EAGAIN, retries the write.
+//         LOG(ERROR) << "fixed write error, sock: " << *sock
+//                 << ", errno: " << -nw;
+//         int err = -nw;
+//         if (err == EAGAIN) {
+//             int ret = SubmitFixedWrite(sock, write_buf_idx);
+//             if (ret == 0) {
+//                 // Does not dereference the socket because the write is retried.
+//                 (void) sock_uptr.release();
+//             } else {
+//                 // TODO(zkl)
+//             }
+//         } else {
+//             // EPIPE is common in pooled connections + backup requests.
+//             PLOG_IF(WARNING, err != EPIPE) << "Fail to write into " << *sock;
+//             sock->SetFailed(err, "Fail to write into %s: %s",
+//                             sock->description().c_str(), berror(err));
+//             RecycleWriteBuf(write_buf_idx);
+//         }
+//     }
+// }
 
 void RingListener::HandleBacklog() {
     while (waiting_cnt_.load(std::memory_order_relaxed) > 0) {
@@ -663,11 +659,7 @@ void RingListener::HandleBacklog() {
                 case OpCode::Recv:
                     SubmitRecv(sock);
                     break;
-                case OpCode::FixedWriteFinish: {
-                    int nw = (int) (data >> 32);
-                    HandleFixedWrite(sock, nw, sock->write_buf_idx_);
-                    break;
-                }
+                case OpCode::FixedWriteFinish:
                 case OpCode::NonFixedWriteFinish: {
                     int nw = (int) (data >> 32);
                     sock->RingNonFixedWriteCb(nw);
