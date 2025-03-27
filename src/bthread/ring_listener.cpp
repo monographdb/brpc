@@ -184,7 +184,6 @@ int RingListener::SubmitFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, ui
     //     << ", socket: " << *sock;
 
     const char *write_buf = write_buf_pool_->GetBuf(ring_buf_idx);
-    sock->write_buf_idx_ = ring_buf_idx;
 
     // LOG(INFO) << "io_uring_prep_write_fixed, len: " << ring_buf_size << ", buf_idx: " << ring_buf_idx;
     io_uring_prep_write_fixed(sqe, sfd, write_buf, ring_buf_size, 0, ring_buf_idx);

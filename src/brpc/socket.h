@@ -637,7 +637,6 @@ public:
 #ifdef IO_URING_ENABLED
     void RingNonFixedWriteCb(int nw);
     void ProcessInbound();
-    void SetFixedWriteLen(uint32_t write_len);
     int WaitForNonFixedWrite();
     void NotifyWaitingNonFixedWrite(int nw);
     int CopyDataRead();
@@ -1003,8 +1002,6 @@ private:
     // of the socket.
     int reg_fd_{-1};
     uint16_t recv_num_{0};
-    uint16_t write_buf_idx_{UINT16_MAX};
-    uint32_t write_len_{0};
 
 #ifdef IO_URING_ENABLED
     friend class ::RingListener;

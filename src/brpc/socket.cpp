@@ -1921,7 +1921,6 @@ int Socket::StartWrite(WriteRequest* req, const WriteOptions& opt) {
                 io_uring_write_req_ = req;
                 req->socket = this;
                 if (req->ring_buf != nullptr) {
-                    write_len_ = req->ring_buf_size;
                     // LOG(INFO) << "socket: " << *this << "submit fixed write, buf idx: " << req->ring_buf_idx
                     //     << ", data: " << std::string_view(req->ring_buf, std::min(20, int(req->ring_buf_size))) << ", size: " << req->ring_buf_size;
                     int ret = g->SocketFixedWrite(this, req->ring_buf_idx, req->ring_buf_size);
@@ -3299,8 +3298,6 @@ void Socket::ProcessInbound() {
     SocketProcess(this);
   }
 }
-
-void Socket::SetFixedWriteLen(uint32_t write_len) { write_len_ = write_len; }
 
 int Socket::WaitForNonFixedWrite() {
     std::unique_lock lk(keep_write_mutex_);
