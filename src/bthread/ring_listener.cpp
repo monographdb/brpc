@@ -354,6 +354,8 @@ size_t RingListener::ExtPoll() {
         has_external_.store(true, std::memory_order_release);
     }
 
+    RecyclePendingBufs();
+
     // has_external_ should be updated before poll_status_ is checked.
     std::atomic_thread_fence(std::memory_order_release);
 
@@ -435,6 +437,19 @@ void RingListener::RecycleReadBuf(uint16_t bid, size_t bytes) {
         buf_cnt++;
     }
     io_uring_buf_ring_advance(in_buf_ring_, buf_cnt);
+}
+
+void RingListener::RecycleWriteBuf(uint16_t buf_idx) {
+    bthread::TaskGroup *cur_group = bthread::tls_task_group;
+    if (task_group_ == cur_group) {
+        write_buf_pool_->Recycle(buf_idx);
+    } else {
+        LOG(INFO) << "Not same group, push into write_bufs: " << buf_idx;
+        write_bufs_.enqueue(buf_idx);
+        // std::unique_lock<std::mutex> lk(recycle_buf_mutex_);
+        // recycle_bufs_.emplace_back(buf_idx);
+        recycle_buf_cnt_.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 int RingListener::SubmitCancel(int fd) {
@@ -685,6 +700,18 @@ bool RingListener::SubmitBacklog(brpc::Socket *sock, uint64_t data) {
     }
 
     return success;
+}
+
+void RingListener::RecyclePendingBufs() {
+    while (recycle_buf_cnt_.load(std::memory_order_relaxed) > 0) {
+        uint16_t buf_idxes[100];
+        int n = write_bufs_.try_dequeue_bulk(buf_idxes, 100);
+        for (size_t idx = 0; idx < n; ++idx) {
+            write_buf_pool_->Recycle(buf_idxes[idx]);
+        }
+        LOG(INFO) << "Recycled bufs: " << n;
+        recycle_buf_cnt_.fetch_sub(n, std::memory_order_relaxed);
+    }
 }
 
 #endif

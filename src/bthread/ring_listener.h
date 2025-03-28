@@ -31,6 +31,8 @@
 
 #include "brpc/socket.h"
 #include "bthread/inbound_ring_buf.h"
+#undef BLOCK_SIZE
+#include "bthread/moodycamelqueue.h"
 #include "bthread/ring_write_buf_pool.h"
 #include "butil/threading/platform_thread.h"
 #include "spsc_queue.h"
@@ -123,7 +125,7 @@ public:
 
     std::pair<char *, uint16_t> GetWriteBuf() { return write_buf_pool_->Get(); }
 
-    void RecycleWriteBuf(uint16_t buf_idx) { write_buf_pool_->Recycle(buf_idx); }
+    void RecycleWriteBuf(uint16_t buf_idx);
 
 private:
     void FreeBuf() {
@@ -210,6 +212,8 @@ private:
 
     bool SubmitBacklog(brpc::Socket *sock, uint64_t data);
 
+    void RecyclePendingBufs();
+
     enum struct PollStatus : uint8_t { Active = 0, Sleep, ExtPoll, Closed };
 
     struct io_uring ring_;
@@ -241,6 +245,10 @@ private:
     std::vector<uint16_t> free_reg_fd_idx_;
 
     std::unique_ptr<RingWriteBufferPool> write_buf_pool_;
+    // std::mutex recycle_buf_mutex_;
+    moodycamel::ConcurrentQueue<uint16_t> write_bufs_;
+    // std::vector<uint16_t> recycle_bufs_;
+    std::atomic<int64_t> recycle_buf_cnt_{0};
 
     inline static size_t buf_length = sysconf(_SC_PAGESIZE);
     inline static size_t buf_ring_size = 1024;
