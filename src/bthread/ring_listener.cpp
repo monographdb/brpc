@@ -354,7 +354,7 @@ size_t RingListener::ExtPoll() {
         has_external_.store(true, std::memory_order_release);
     }
 
-    RecyclePendingBufs();
+    RecycleReturnedWriteBufs();
 
     // has_external_ should be updated before poll_status_ is checked.
     std::atomic_thread_fence(std::memory_order_release);
@@ -658,7 +658,7 @@ bool RingListener::SubmitBacklog(brpc::Socket *sock, uint64_t data) {
     return success;
 }
 
-void RingListener::RecyclePendingBufs() {
+void RingListener::RecycleReturnedWriteBufs() {
     while (recycle_buf_cnt_.load(std::memory_order_relaxed) > 0) {
         uint16_t buf_idxes[100];
         int n = write_bufs_.try_dequeue_bulk(buf_idxes, 100);

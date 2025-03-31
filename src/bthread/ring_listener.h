@@ -210,7 +210,7 @@ private:
 
     bool SubmitBacklog(brpc::Socket *sock, uint64_t data);
 
-    void RecyclePendingBufs();
+    void RecycleReturnedWriteBufs();
 
     enum struct PollStatus : uint8_t { Active = 0, Sleep, ExtPoll, Closed };
 

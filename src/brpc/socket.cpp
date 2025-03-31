@@ -615,6 +615,7 @@ void Socket::ReleaseAllFailedWriteRequests(Socket::WriteRequest* req) {
 #ifdef IO_URING_ENABLED
         if (FLAGS_use_io_uring) {
             req->ring_buf_data.clear();
+            // TODO(zkl): Recycle registered buffer here?
         }
 #endif
         req->data.clear();  // MUST, otherwise IsWriteComplete is false
@@ -1798,7 +1799,6 @@ int Socket::Write(const char *ring_buf, uint16_t ring_buf_idx, uint32_t ring_buf
 
     // LOG(INFO) << "socket: " << *this << " write, ring_buf: " << std::string_view(ring_buf, std::min(20, int(ring_buf_size)))
     // << ", ring_buf_size: " << ring_buf_size << ", req: " << req;
-    // req->data.swap(*data);
     req->ring_buf_data.ring_buf = ring_buf;
     req->ring_buf_data.ring_buf_idx = ring_buf_idx;
     req->ring_buf_data.ring_buf_size = ring_buf_size;
@@ -1887,9 +1887,6 @@ int Socket::Write(SocketMessagePtr<>& msg, const WriteOptions* options_in) {
     return StartWrite(req, opt);
 }
 
-inline bvar::LatencyRecorder copy_data_ns("a_", "StartWriteCopyNs");
-DEFINE_bool(append_user_data, false, "append user data instead of append");
-
 int Socket::StartWrite(WriteRequest* req, const WriteOptions& opt) {
     // LOG(INFO) << "sock: " << *this << ", StartWrite req: " << req
     //     << ", data: " << req->data.to_string() << ", data len: " << req->data.size();
@@ -1969,13 +1966,7 @@ int Socket::StartWrite(WriteRequest* req, const WriteOptions& opt) {
                     if (ret == 0) {
                         return 0;
                     }
-
                     LOG(WARNING) << "Socket: " << *this << " FixedWrite failed, will KeepWrite";
-                    // req->data.append(req->ring_buf, req->ring_buf_idx);
-                    // req->ring_buf = nullptr;
-                    // req->ring_buf_idx = -1;
-                    // req->ring_buf_size = 0;
-                    // g->RecycleRingWriteBuf(req->ring_buf_idx);
                 } else {
                     io_uring_write_req_ = req;
                     req->data.prepare_iovecs(&iovecs_);
@@ -2156,6 +2147,7 @@ void* Socket::KeepWrite(void* void_arg) {
     } while (1);
 
     // Error occurred, release all requests until no new requests.
+    // TODO(zkl): Recycle registered buffers in req.
     s->ReleaseAllFailedWriteRequests(req);
     return NULL;
 }
@@ -2259,15 +2251,6 @@ ssize_t Socket::DoWrite(WriteRequest* req) {
                         break;
                     }
                 }
-
-                // size_t npop_all = nw;
-                // for (size_t i = 0; i < ndata; ++i) {
-                //     npop_all -= data_list[i]->pop_front(npop_all);
-                //     if (npop_all == 0) {
-                //         break;
-                //     }
-                // }
-
                 return nw;
             } else {
                 return butil::IOBuf::cut_multiple_into_file_descriptor(
@@ -3376,6 +3359,7 @@ FAIL_TO_WRITE:
     // `SetFailed' before `ReturnFailedWriteRequest' (which will calls
     // `on_reset' callback inside the id object) so that we immediately
     // know this socket has failed inside the `on_reset' callback
+    // TODO(zkl): Recycle registered buffers in req.
     ReleaseAllFailedWriteRequests(req);
     errno = saved_errno;
     return;
