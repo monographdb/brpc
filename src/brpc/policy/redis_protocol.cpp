@@ -183,7 +183,11 @@ ParseResult ParseRedisMessage(butil::IOBuf* source, Socket* socket,
         err = ctx->parser.Consume(*source, &current_args, &ctx->arena);
         if (err != PARSE_OK) {
             cur_task->SetBoundGroup(NULL);
-            cur_group->RecycleRingWriteBuf(ring_buf_idx);
+#ifdef IO_URING_ENABLED
+            if (FLAGS_use_io_uring) {
+                cur_group->RecycleRingWriteBuf(ring_buf_idx);
+            }
+#endif
             return MakeParseError(err);
         }
         while (true) {
@@ -194,7 +198,11 @@ ParseResult ParseRedisMessage(butil::IOBuf* source, Socket* socket,
             }
             if (ConsumeCommand(ctx, current_args, false, &appender) != 0) {
                 cur_task->SetBoundGroup(NULL);
-                cur_group->RecycleRingWriteBuf(ring_buf_idx);
+#ifdef IO_URING_ENABLED
+                if (FLAGS_use_io_uring) {
+                    cur_group->RecycleRingWriteBuf(ring_buf_idx);
+                }
+#endif
                 return MakeParseError(PARSE_ERROR_ABSOLUTELY_WRONG);
             }
             current_args.swap(next_args);
@@ -202,7 +210,11 @@ ParseResult ParseRedisMessage(butil::IOBuf* source, Socket* socket,
         if (ConsumeCommand(ctx, current_args,
                       true /*must be the last message*/, &appender) != 0) {
             cur_task->SetBoundGroup(NULL);
-            cur_group->RecycleRingWriteBuf(ring_buf_idx);
+#ifdef IO_URING_ENABLED
+            if (FLAGS_use_io_uring) {
+                cur_group->RecycleRingWriteBuf(ring_buf_idx);
+            }
+#endif
             return MakeParseError(PARSE_ERROR_ABSOLUTELY_WRONG);
         }
 

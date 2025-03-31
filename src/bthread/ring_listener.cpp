@@ -444,7 +444,8 @@ void RingListener::RecycleWriteBuf(uint16_t buf_idx) {
     if (task_group_ == cur_group) {
         write_buf_pool_->Recycle(buf_idx);
     } else {
-        LOG(INFO) << "Not same group, push into write_bufs: " << buf_idx;
+        LOG(INFO) << "Not same group, cur group: " << cur_group->group_id_
+            << ", buf group: " << task_group_->group_id_ << " push into write_bufs: " << buf_idx;
         write_bufs_.enqueue(buf_idx);
         // std::unique_lock<std::mutex> lk(recycle_buf_mutex_);
         // recycle_bufs_.emplace_back(buf_idx);
@@ -616,51 +617,6 @@ void RingListener::HandleRecv(brpc::Socket *sock, io_uring_cqe *cqe) {
     brpc::Socket::SocketResume(sock, in_buf, task_group_);
 }
 
-// void RingListener::HandleFixedWrite(brpc::Socket *sock, int nw, uint16_t write_buf_idx) {
-//     // Fixed write finished. Deferences the socket, until the write is retried.
-//     brpc::SocketUniquePtr sock_uptr(sock);
-//
-//     if (nw >= 0) {
-//         CHECK(sock->write_len_ >= nw);
-//         sock->write_len_ -= nw;
-//         if (sock->write_len_ == 0) {
-//             // Data fully written, recycle the write buffer.
-//             RecycleWriteBuf(write_buf_idx);
-//             return;
-//         }
-//         // Data not fully written, shift the data and submit again.
-//         const char *write_buf = write_buf_pool_->GetBuf(write_buf_idx);
-//         std::memmove(const_cast<char *>(write_buf), write_buf + nw, sock->write_len_);
-//         int ret = SubmitFixedWrite(sock, write_buf_idx);
-//         if (ret == 0) {
-//             // Does not dereference the socket because the write is retried.
-//             (void) sock_uptr.release();
-//         } else {
-//             // TODO(zkl)
-//         }
-//     } else {
-//         // Fixed write failed. If the errorno is EAGAIN, retries the write.
-//         LOG(ERROR) << "fixed write error, sock: " << *sock
-//                 << ", errno: " << -nw;
-//         int err = -nw;
-//         if (err == EAGAIN) {
-//             int ret = SubmitFixedWrite(sock, write_buf_idx);
-//             if (ret == 0) {
-//                 // Does not dereference the socket because the write is retried.
-//                 (void) sock_uptr.release();
-//             } else {
-//                 // TODO(zkl)
-//             }
-//         } else {
-//             // EPIPE is common in pooled connections + backup requests.
-//             PLOG_IF(WARNING, err != EPIPE) << "Fail to write into " << *sock;
-//             sock->SetFailed(err, "Fail to write into %s: %s",
-//                             sock->description().c_str(), berror(err));
-//             RecycleWriteBuf(write_buf_idx);
-//         }
-//     }
-// }
-
 void RingListener::HandleBacklog() {
     while (waiting_cnt_.load(std::memory_order_relaxed) > 0) {
         size_t cnt = waiting_socks_.TryDequeueBulk(waiting_batch_.begin(),
@@ -709,7 +665,7 @@ void RingListener::RecyclePendingBufs() {
         for (size_t idx = 0; idx < n; ++idx) {
             write_buf_pool_->Recycle(buf_idxes[idx]);
         }
-        LOG(INFO) << "Recycled bufs: " << n;
+        // LOG(INFO) << "Recycled bufs: " << n;
         recycle_buf_cnt_.fetch_sub(n, std::memory_order_relaxed);
     }
 }

@@ -144,7 +144,7 @@ private:
         Recv = 0,
         CancelRecv,
         RegisterFile,
-        // TODO(zkl): merge FixedWrite and NonFixedWrite
+        // TODO(zkl): Remove (Non)FixedWrite, merge into Write, WriteFinish
         FixedWrite,
         FixedWriteFinish,
         NonFixedWrite,
@@ -206,8 +206,6 @@ private:
 
     void HandleRecv(brpc::Socket *sock, io_uring_cqe *cqe);
 
-    // void HandleFixedWrite(brpc::Socket *sock, int nw, uint16_t write_buf_idx);
-
     void HandleBacklog();
 
     bool SubmitBacklog(brpc::Socket *sock, uint64_t data);
@@ -245,9 +243,7 @@ private:
     std::vector<uint16_t> free_reg_fd_idx_;
 
     std::unique_ptr<RingWriteBufferPool> write_buf_pool_;
-    // std::mutex recycle_buf_mutex_;
     moodycamel::ConcurrentQueue<uint16_t> write_bufs_;
-    // std::vector<uint16_t> recycle_bufs_;
     std::atomic<int64_t> recycle_buf_cnt_{0};
 
     inline static size_t buf_length = sysconf(_SC_PAGESIZE);
