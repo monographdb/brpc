@@ -559,8 +559,6 @@ void Socket::ReturnSuccessfulWriteRequest(Socket::WriteRequest* p) {
     const bthread_id_t id_wait = p->id_wait;
 #ifdef IO_URING_ENABLED
     if (FLAGS_use_io_uring && p->ring_buf_data.ring_buf_idx != -1) {
-        // CHECK(socket != nullptr && socket->bound_g_ != nullptr);
-        // socket->bound_g_->RecycleRingWriteBuf(p->ring_buf_data.ring_buf_idx);
         bound_g_->RecycleRingWriteBuf(p->ring_buf_data.ring_buf_idx);
         p->ring_buf_data.reset();
     }
