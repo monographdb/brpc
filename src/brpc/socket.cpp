@@ -578,7 +578,10 @@ void Socket::ReturnFailedWriteRequest(Socket::WriteRequest* p, int error_code,
     }
 #ifdef IO_URING_ENABLED
     if (FLAGS_use_io_uring) {
-        p->ring_buf_data.clear();
+        if (p->ring_buf_data.ring_buf_idx != -1) {
+            bound_g_->RecycleRingWriteBuf(p->ring_buf_data.ring_buf_idx);
+        }
+        p->ring_buf_data.reset();
     }
 #endif
     p->data.clear();  // data is probably not written.
@@ -615,7 +618,6 @@ void Socket::ReleaseAllFailedWriteRequests(Socket::WriteRequest* req) {
 #ifdef IO_URING_ENABLED
         if (FLAGS_use_io_uring) {
             req->ring_buf_data.clear();
-            // TODO(zkl): Recycle registered buffer here?
         }
 #endif
         req->data.clear();  // MUST, otherwise IsWriteComplete is false
@@ -2147,7 +2149,6 @@ void* Socket::KeepWrite(void* void_arg) {
     } while (1);
 
     // Error occurred, release all requests until no new requests.
-    // TODO(zkl): Recycle registered buffers in req.
     s->ReleaseAllFailedWriteRequests(req);
     return NULL;
 }
@@ -3359,7 +3360,6 @@ FAIL_TO_WRITE:
     // `SetFailed' before `ReturnFailedWriteRequest' (which will calls
     // `on_reset' callback inside the id object) so that we immediately
     // know this socket has failed inside the `on_reset' callback
-    // TODO(zkl): Recycle registered buffers in req.
     ReleaseAllFailedWriteRequests(req);
     errno = saved_errno;
     return;
