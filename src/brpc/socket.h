@@ -353,7 +353,7 @@ public:
     };
 
 #ifdef IO_URING_ENABLED
-    int Write(const char *ring_buf, uint16_t ring_buf_idx, uint32_t ring_buf_size,
+    int Write(char *ring_buf, uint16_t ring_buf_idx, uint32_t ring_buf_size,
         const WriteOptions* options = NULL);
 #endif
 

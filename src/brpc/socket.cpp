@@ -61,7 +61,9 @@
 #endif
 
 DEFINE_bool(dispatch_lazily, false, "dispatcher lazily creates task");
+#ifdef IO_URING_ENABLED
 DEFINE_bool(use_io_uring, false, "Use IO URING to do the polling.");
+#endif
 
 namespace bthread {
 size_t __attribute__((weak))
@@ -327,7 +329,7 @@ const uint32_t MAX_PIPELINED_COUNT = 16384;
 
 #ifdef IO_URING_ENABLED
 struct RegisteredRingBuffer {
-    const char *ring_buf{nullptr};
+    char *ring_buf{nullptr};
     int32_t ring_buf_idx{-1};
     uint32_t ring_buf_size{0};
 
@@ -336,10 +338,10 @@ struct RegisteredRingBuffer {
         return ring_buf_size == 0;
     }
 
-    void reset() {
-        ring_buf = nullptr;
-        ring_buf_idx = -1;
-        ring_buf_size = 0;
+    void reset(char *buf, int32_t buf_idx, uint32_t buf_size) {
+        ring_buf = buf;
+        ring_buf_idx = buf_idx;
+        ring_buf_size = buf_size;
     }
 
     void clear() {
@@ -356,7 +358,7 @@ struct RegisteredRingBuffer {
             // LOG(INFO) << "reg buffer data pop front: " << len << ", all popped";
             return len;
         }
-        std::memmove(const_cast<char *>(ring_buf), ring_buf + n, ring_buf_size - n);
+        std::memmove(ring_buf, ring_buf + n, ring_buf_size - n);
         ring_buf_size -= n;
         LOG(FATAL) << "reg buffer data pop front: " << n << ", remaining: " << ring_buf_size;
         return n;
@@ -560,7 +562,7 @@ void Socket::ReturnSuccessfulWriteRequest(Socket::WriteRequest* p) {
 #ifdef IO_URING_ENABLED
     if (FLAGS_use_io_uring && p->ring_buf_data.ring_buf_idx != -1) {
         bound_g_->RecycleRingWriteBuf(p->ring_buf_data.ring_buf_idx);
-        p->ring_buf_data.reset();
+        p->ring_buf_data.reset(nullptr, -1, 0);
     }
 #endif
     butil::return_object(p);
@@ -579,7 +581,7 @@ void Socket::ReturnFailedWriteRequest(Socket::WriteRequest* p, int error_code,
         if (p->ring_buf_data.ring_buf_idx != -1) {
             bound_g_->RecycleRingWriteBuf(p->ring_buf_data.ring_buf_idx);
         }
-        p->ring_buf_data.reset();
+        p->ring_buf_data.reset(nullptr, -1, 0);
     }
 #endif
     p->data.clear();  // data is probably not written.
@@ -1766,7 +1768,7 @@ X509* Socket::GetPeerCertificate() const {
 
 #ifdef IO_URING_ENABLED
 
-int Socket::Write(const char *ring_buf, uint16_t ring_buf_idx, uint32_t ring_buf_size,
+int Socket::Write(char *ring_buf, uint16_t ring_buf_idx, uint32_t ring_buf_size,
                   const WriteOptions *options_in) {
 
     WriteOptions opt;
@@ -1799,9 +1801,8 @@ int Socket::Write(const char *ring_buf, uint16_t ring_buf_idx, uint32_t ring_buf
 
     // LOG(INFO) << "socket: " << *this << " write, ring_buf: " << std::string_view(ring_buf, std::min(20, int(ring_buf_size)))
     // << ", ring_buf_size: " << ring_buf_size << ", req: " << req;
-    req->ring_buf_data.ring_buf = ring_buf;
-    req->ring_buf_data.ring_buf_idx = ring_buf_idx;
-    req->ring_buf_data.ring_buf_size = ring_buf_size;
+    req->ring_buf_data.reset(ring_buf, ring_buf_idx, ring_buf_size);
+
     // Set `req->next' to UNCONNECTED so that the KeepWrite thread will
     // wait until it points to a valid WriteRequest or NULL.
     req->next = WriteRequest::UNCONNECTED;
@@ -2186,7 +2187,7 @@ ssize_t Socket::DoWrite(WriteRequest* req) {
     // Group butil::IOBuf in the list into a batch array.
     butil::IOBuf* data_list[DATA_LIST_MAX];
 #ifdef IO_URING_ENABLED
-    std::variant<butil::IOBuf*, RegisteredRingBuffer*> data_list_[DATA_LIST_MAX];
+    std::variant<butil::IOBuf*, RegisteredRingBuffer*> mixed_data_list[DATA_LIST_MAX];
 #endif
     size_t ndata = 0;
     for (WriteRequest* p = req; p != NULL && ndata < DATA_LIST_MAX;
@@ -2199,10 +2200,10 @@ ssize_t Socket::DoWrite(WriteRequest* req) {
         if (FLAGS_use_io_uring) {
             if (p->ring_buf_data.ring_buf != nullptr) {
                 // LOG(INFO) << "ring buf data: " << &p->ring_buf_data;
-                data_list_[ndata] = &p->ring_buf_data;
+                mixed_data_list[ndata] = &p->ring_buf_data;
             } else {
                 // LOG(INFO) << "iobuf data: " << &p->data;
-                data_list_[ndata] = &p->data;
+                mixed_data_list[ndata] = &p->data;
             }
         }
 #endif
@@ -2222,7 +2223,7 @@ ssize_t Socket::DoWrite(WriteRequest* req) {
 #ifdef IO_URING_ENABLED
             if (FLAGS_use_io_uring) {
                 butil::IOBuf::cut_multiple_into_iovecs(&iovecs_, data_list, ndata);
-                cut_data_into_iovecs(&iovecs_, data_list_, ndata);
+                cut_data_into_iovecs(&iovecs_, mixed_data_list, ndata);
                 // for (auto iov: iovecs_) {
                 //     LOG(INFO) << "iov: " << std::string_view((char*)iov.iov_base, iov.iov_len);
                 // }
@@ -2239,11 +2240,11 @@ ssize_t Socket::DoWrite(WriteRequest* req) {
                 // LOG(INFO) << "return nw: " << nw;
                 size_t npop_all = nw;
                 for (size_t i = 0; i < ndata; ++i) {
-                    if (std::holds_alternative<butil::IOBuf*>(data_list_[i])) {
-                        butil::IOBuf *buf = std::get<butil::IOBuf*>(data_list_[i]);
+                    if (std::holds_alternative<butil::IOBuf*>(mixed_data_list[i])) {
+                        butil::IOBuf *buf = std::get<butil::IOBuf*>(mixed_data_list[i]);
                         npop_all -= buf->pop_front(npop_all);
-                    } else if (std::holds_alternative<RegisteredRingBuffer*>(data_list_[i])) {
-                        RegisteredRingBuffer* rb = std::get<RegisteredRingBuffer*>(data_list_[i]);
+                    } else if (std::holds_alternative<RegisteredRingBuffer*>(mixed_data_list[i])) {
+                        RegisteredRingBuffer* rb = std::get<RegisteredRingBuffer*>(mixed_data_list[i]);
                         npop_all -= rb->pop_front(npop_all);
                     }
                     if (npop_all == 0) {
