@@ -1969,7 +1969,6 @@ int Socket::StartWrite(WriteRequest* req, const WriteOptions& opt) {
                     }
                     LOG(WARNING) << "Socket: " << *this << " FixedWrite failed, will KeepWrite";
                 } else {
-                    io_uring_write_req_ = req;
                     req->data.prepare_iovecs(&iovecs_);
                     req->socket = this;
                     // If this write is from Stream's DoWrite, wait and return the result.
@@ -2175,7 +2174,7 @@ void cut_data_into_iovecs(std::vector<struct iovec> *iovecs,
                 iovecs->emplace_back();
                 iovec &iov = iovecs->back();
                 // LOG(INFO) << "buf data: " << std::string_view(rb->ring_buf, std::min(50, int(rb->ring_buf_size)));
-                iov.iov_base = const_cast<char*>(rb->ring_buf);
+                iov.iov_base = rb->ring_buf;
                 iov.iov_len = rb->ring_buf_size;
             }
         }
