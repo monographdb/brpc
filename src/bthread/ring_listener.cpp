@@ -178,14 +178,7 @@ int RingListener::SubmitFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, ui
         fd_idx = sock->reg_fd_idx_;
     }
     int sfd = fd_idx >= 0 ? fd_idx : sock->fd();
-    // LOG(INFO) << "SubmitFixedWrite tls_task_group: " << bthread::tls_task_group
-    //     << ", socket bound task_group: " << sock->bound_g_
-    //     << ", sfd: " << sfd << ", fd_idx: " << fd_idx
-    //     << ", socket: " << *sock;
-
     const char *write_buf = write_buf_pool_->GetBuf(ring_buf_idx);
-
-    // LOG(INFO) << "io_uring_prep_write_fixed, len: " << ring_buf_size << ", buf_idx: " << ring_buf_idx;
     io_uring_prep_write_fixed(sqe, sfd, write_buf, ring_buf_size, 0, ring_buf_idx);
 
     uint64_t data = reinterpret_cast<uint64_t>(sock);
@@ -215,25 +208,9 @@ int RingListener::SubmitNonFixedWrite(brpc::Socket *sock) {
         fd_idx = sock->reg_fd_idx_;
     }
     int sfd = fd_idx >= 0 ? fd_idx : sock->fd();
-    // LOG(INFO) << "SubmitNonFixedWrite tls_task_group: " << bthread::tls_task_group
-    //     << ", socket bound task_group: " << sock->bound_g_
-    //     << ", sfd: " << sfd << ", fd_idx: " << fd_idx
-    //     << ", socket: " << *sock;
-
     CHECK(sock->iovecs_.size() <= IOV_MAX);
     io_uring_prep_writev(sqe, sfd, sock->iovecs_.data(), sock->iovecs_.size(),
                          0);
-
-    // uint64_t size = 0;
-    // std::string total_data;
-    // for (auto &iovec: sock->iovecs_) {
-    //     size += iovec.iov_len;
-    //     total_data.append(static_cast<char *>(iovec.iov_base), iovec.iov_len);
-    // }
-    // LOG(INFO) << "SubmitNonFixedWrite() sock->iovecs size: " << sock->iovecs_.size()
-    //     << " data total size: " << size
-    //     << " socket: " << *sock << ", fd_idx: " << fd_idx
-    //     << " total data: " << total_data;
 
     uint64_t data = reinterpret_cast<uint64_t>(sock);
     data = data << 16;
@@ -268,25 +245,11 @@ int RingListener::SubmitWaitingNonFixedWrite(brpc::Socket *sock) {
         fd_idx = sock->reg_fd_idx_;
     }
     int sfd = fd_idx >= 0 ? fd_idx : sock->fd();
-    // LOG(INFO) << "SubmitWaitingNonFixedWrite tls_task_group: " << bthread::tls_task_group
-    //     << ", socket bound task_group: " << sock->bound_g_
-    //     << ", sfd: " << sfd << ", fd_idx: " << fd_idx
-    //     << ", socket: " << *sock;
 
     CHECK(sock->iovecs_.size() <= IOV_MAX);
 
     io_uring_prep_writev(sqe, sfd, sock->iovecs_.data(), sock->iovecs_.size(),
                          0);
-    // uint64_t size = 0;
-    // std::string total_data;
-    // for (auto &iovec: sock->iovecs_) {
-    //     size += iovec.iov_len;
-    //     total_data.append(static_cast<char *>(iovec.iov_base), iovec.iov_len);
-    // }
-    // LOG(INFO) << "SubmitWaitingNonFixedWrite() sock->iovecs size: " << sock->iovecs_.size()
-    //     << " data total size: " << size
-    //     << " socket: " << *sock << ", fd_idx: " << fd_idx
-    //     << " total data: " << total_data;
 
     uint64_t data = reinterpret_cast<uint64_t>(sock);
     data = data << 16;
@@ -444,8 +407,6 @@ void RingListener::RecycleWriteBuf(uint16_t buf_idx) {
     if (task_group_ == cur_group) {
         write_buf_pool_->Recycle(buf_idx);
     } else {
-        // LOG(INFO) << "Not same group, cur group: " << cur_group->group_id_
-        //     << ", buf group: " << task_group_->group_id_ << " push into write_bufs: " << buf_idx;
         recycle_buf_cnt_.fetch_add(1, std::memory_order_relaxed);
         write_bufs_.enqueue(buf_idx);
     }
@@ -663,7 +624,6 @@ void RingListener::RecycleReturnedWriteBufs() {
         for (size_t idx = 0; idx < n; ++idx) {
             write_buf_pool_->Recycle(buf_idxes[idx]);
         }
-        // LOG(INFO) << "Recycled bufs: " << n;
         recycle_buf_cnt_.fetch_sub(n, std::memory_order_relaxed);
     }
 }

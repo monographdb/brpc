@@ -77,7 +77,6 @@ public:
   }
 
   void Recycle(uint16_t buf_idx) {
-    // LOG(INFO) << "recycle buf idx: " << buf_idx;
     buf_pool_.emplace_back(buf_idx);
   }
 

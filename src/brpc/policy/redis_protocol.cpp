@@ -177,7 +177,6 @@ ParseResult ParseRedisMessage(butil::IOBuf* source, Socket* socket,
             std::tie(ring_buf, ring_buf_idx) = cur_group->GetRingWriteBuf();
             appender.set_ring_buffer(ring_buf, RingWriteBufferPool::buf_length);
         }
-        // LOG(INFO) << "use ring_buf idx: " << ring_buf_idx;
 #endif
 
         err = ctx->parser.Consume(*source, &current_args, &ctx->arena);

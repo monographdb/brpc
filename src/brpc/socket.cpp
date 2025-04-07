@@ -334,7 +334,6 @@ struct RegisteredRingBuffer {
     uint32_t ring_buf_size{0};
 
     bool empty() const {
-        // LOG(INFO) << "ring buf idx: " << ring_buf_idx <<  " empty: " << (ring_buf_size == 0);
         return ring_buf_size == 0;
     }
 
@@ -355,12 +354,10 @@ struct RegisteredRingBuffer {
         size_t len = ring_buf_size;
         if (n >= len) {
             ring_buf_size = 0;
-            // LOG(INFO) << "reg buffer data pop front: " << len << ", all popped";
             return len;
         }
         std::memmove(ring_buf, ring_buf + n, ring_buf_size - n);
         ring_buf_size -= n;
-        LOG(FATAL) << "reg buffer data pop front: " << n << ", remaining: " << ring_buf_size;
         return n;
     }
 };
@@ -555,7 +552,6 @@ Socket::~Socket() {
 }
 
 void Socket::ReturnSuccessfulWriteRequest(Socket::WriteRequest* p) {
-    // LOG(INFO) << "socket: " << *this << "ReturnSuccessfulWriteRequest: " << p;
     CHECK(p->empty());
     AddOutputMessages(1);
     const bthread_id_t id_wait = p->id_wait;
@@ -1799,8 +1795,6 @@ int Socket::Write(char *ring_buf, uint16_t ring_buf_idx, uint32_t ring_buf_size,
         return SetError(opt.id_wait, ENOMEM);
     }
 
-    // LOG(INFO) << "socket: " << *this << " write, ring_buf: " << std::string_view(ring_buf, std::min(20, int(ring_buf_size)))
-    // << ", ring_buf_size: " << ring_buf_size << ", req: " << req;
     req->ring_buf_data.reset(ring_buf, ring_buf_idx, ring_buf_size);
 
     // Set `req->next' to UNCONNECTED so that the KeepWrite thread will
@@ -1889,9 +1883,6 @@ int Socket::Write(SocketMessagePtr<>& msg, const WriteOptions* options_in) {
 }
 
 int Socket::StartWrite(WriteRequest* req, const WriteOptions& opt) {
-    // LOG(INFO) << "sock: " << *this << ", StartWrite req: " << req
-    //     << ", data: " << req->data.to_string() << ", data len: " << req->data.size();
-
     // Release fence makes sure the thread getting request sees *req
     WriteRequest* const prev_head =
         _write_head.exchange(req, butil::memory_order_release);
@@ -1901,7 +1892,6 @@ int Socket::StartWrite(WriteRequest* req, const WriteOptions& opt) {
         // lock-free, but the duration is so short(1~2 instructions,
         // depending on compiler) that the spin rarely occurs in practice
         // (I've not seen any spin in highly contended tests).
-        // LOG(INFO) << "sock: " << *this << ", Someone is writing the socket, append the request: " << req;
         req->next = prev_head;
         return 0;
     }
@@ -1959,15 +1949,12 @@ int Socket::StartWrite(WriteRequest* req, const WriteOptions& opt) {
 
                 io_uring_write_req_ = req;
                 req->socket = this;
-                // LOG(INFO) << "set req: " << req << " socket to: " << this;
                 if (req->ring_buf_data.ring_buf != nullptr) {
-                    // LOG(INFO) << "socket: " << *this << "submit fixed write, buf idx: " << req->ring_buf_idx
-                    //     << ", data: " << std::string_view(req->ring_buf, std::min(20, int(req->ring_buf_size))) << ", size: " << req->ring_buf_size;
                     int ret = g->SocketFixedWrite(this, req->ring_buf_data.ring_buf_idx, req->ring_buf_data.ring_buf_size);
                     if (ret == 0) {
                         return 0;
                     }
-                    LOG(WARNING) << "Socket: " << *this << " FixedWrite failed, will KeepWrite";
+                    LOG(WARNING) << "Socket: " << *this << " submit FixedWrite failed, will KeepWrite";
                 } else {
                     req->data.prepare_iovecs(&iovecs_);
                     req->socket = this;
@@ -2042,8 +2029,6 @@ void* Socket::KeepWrite(void* void_arg) {
     WriteRequest* req = static_cast<WriteRequest*>(void_arg);
     SocketUniquePtr s(req->socket);
 
-    // LOG(INFO) << "socket: " << *s << " KeepWrite, req: " << req << ", data size: " << req->data.size()
-    // << ", data: " << req->data.to_string().substr(0, std::min(50, int(req->data.size())));
     // When error occurs, spin until there's no more requests instead of
     // returning directly otherwise _write_head is permantly non-NULL which
     // makes later Write() abnormal.
@@ -2056,7 +2041,6 @@ void* Socket::KeepWrite(void* void_arg) {
             s->ReturnSuccessfulWriteRequest(saved_req);
         }
         const ssize_t nw = s->DoWrite(req);
-        // LOG(INFO) << "socket: " << *s << " DoWrite return nw: " << nw;
         if (nw < 0) {
             if (errno != EAGAIN && errno != EOVERCROWDED) {
                 const int saved_errno = errno;
@@ -2161,19 +2145,14 @@ void cut_data_into_iovecs(std::vector<struct iovec> *iovecs,
     iovecs->reserve(count);
     iovecs->clear();
     for (size_t i = 0; i < count && iovecs->size() < IOV_MAX; ++i) {
-        // LOG(INFO) << "i: " << i << ", count: " << count;
         if (std::holds_alternative<butil::IOBuf*>(data_list[i])) {
             butil::IOBuf *buf = std::get<butil::IOBuf*>(data_list[i]);
-            // LOG(INFO) << "iobuf: " << buf << ", cut_into_iovecs..., data: "
-                // << buf->to_string().substr(0, std::min(50, int(buf->size())));
             buf->cut_into_iovecs(iovecs);
-            // LOG(INFO) << "iobuf: " << buf << ", cut_into_iovecs finishes";
         } else if (std::holds_alternative<RegisteredRingBuffer*>(data_list[i])) {
             RegisteredRingBuffer* rb = std::get<RegisteredRingBuffer*>(data_list[i]);
             if (rb->ring_buf && rb->ring_buf_size > 0) {
                 iovecs->emplace_back();
                 iovec &iov = iovecs->back();
-                // LOG(INFO) << "buf data: " << std::string_view(rb->ring_buf, std::min(50, int(rb->ring_buf_size)));
                 iov.iov_base = rb->ring_buf;
                 iov.iov_len = rb->ring_buf_size;
             }
@@ -2193,16 +2172,11 @@ ssize_t Socket::DoWrite(WriteRequest* req) {
     size_t ndata = 0;
     for (WriteRequest* p = req; p != NULL && ndata < DATA_LIST_MAX;
          p = p->next) {
-        // LOG(INFO) << "socket: " << *this << " DoWrite, merging data of req: " << p <<
-        //     ", data: " << req->data.to_string().substr(0, std::min(50, int(req->data.size())))
-        //     << ", size: " << req->data.size();
 #ifdef IO_URING_ENABLED
         if (use_mixed_data_list) {
             if (p->ring_buf_data.ring_buf != nullptr) {
-                // LOG(INFO) << "ring buf data: " << &p->ring_buf_data;
                 mixed_data_list[ndata] = &p->ring_buf_data;
             } else {
-                // LOG(INFO) << "iobuf data: " << &p->data;
                 mixed_data_list[ndata] = &p->data;
             }
         } else {
@@ -2227,9 +2201,6 @@ ssize_t Socket::DoWrite(WriteRequest* req) {
 #ifdef IO_URING_ENABLED
             if (use_mixed_data_list) {
                 cut_data_into_iovecs(&iovecs_, mixed_data_list, ndata);
-                // for (auto iov: iovecs_) {
-                //     LOG(INFO) << "iov: " << std::string_view((char*)iov.iov_base, iov.iov_len);
-                // }
 
                 // Submit write into the iouring and wait for the result
                 bthread::TaskGroup *g =
@@ -2240,7 +2211,6 @@ ssize_t Socket::DoWrite(WriteRequest* req) {
                     errno = -nw;
                     return nw;
                 }
-                // LOG(INFO) << "return nw: " << nw;
                 size_t npop_all = nw;
                 for (size_t i = 0; i < ndata; ++i) {
                     if (std::holds_alternative<butil::IOBuf*>(mixed_data_list[i])) {
@@ -3305,7 +3275,6 @@ std::string Socket::description() const {
 
 #ifdef IO_URING_ENABLED
 void Socket::RingNonFixedWriteCb(int nw) {
-    // LOG(INFO) << "socket: " << *this << " RingNonFixedWriteCb, nw: " << nw;
     // Deferences the socket if the write request finishes.
     SocketUniquePtr sock(this);
 
@@ -3314,9 +3283,6 @@ void Socket::RingNonFixedWriteCb(int nw) {
     if (nw > 0) {
         // ring_buf is not null if this is a fixed write of the socket.
         if (req->ring_buf_data.ring_buf != nullptr) {
-            // LOG(INFO) << "socket: " << *this << "Handle fixed write res, nw: " << nw
-            //     << ", ring_bufsize: " << req->ring_buf_data.ring_buf_size
-            //     << ", req: " << req;
             // Handle registered buffer write.
             CHECK(req->ring_buf_data.ring_buf_size >= nw);
             req->ring_buf_data.pop_front(nw);
@@ -3349,7 +3315,6 @@ void Socket::RingNonFixedWriteCb(int nw) {
         AddOutputBytes(nw);
     }
     if (IsWriteComplete(req, true, NULL)) {
-        // LOG(INFO) << "Write complete, req: " << req << " return";
         ReturnSuccessfulWriteRequest(req);
         return;
     }
@@ -3357,7 +3322,6 @@ void Socket::RingNonFixedWriteCb(int nw) {
     // KeepWrite will continue to reference the socket. So, releases the unique
     // pointer which does not decrement the reference count.
     (void) sock.release();
-    // LOG(INFO) << "socket: " << *this << ", StartKeepWrite bthread";
     if (bthread_start_background(&th, &BTHREAD_ATTR_NORMAL,
                                  KeepWrite, req) != 0) {
         LOG(FATAL) << "Fail to start KeepWrite";
