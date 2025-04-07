@@ -446,10 +446,8 @@ void RingListener::RecycleWriteBuf(uint16_t buf_idx) {
     } else {
         // LOG(INFO) << "Not same group, cur group: " << cur_group->group_id_
         //     << ", buf group: " << task_group_->group_id_ << " push into write_bufs: " << buf_idx;
-        write_bufs_.enqueue(buf_idx);
-        // std::unique_lock<std::mutex> lk(recycle_buf_mutex_);
-        // recycle_bufs_.emplace_back(buf_idx);
         recycle_buf_cnt_.fetch_add(1, std::memory_order_relaxed);
+        write_bufs_.enqueue(buf_idx);
     }
 }
 

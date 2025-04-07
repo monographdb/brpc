@@ -2157,7 +2157,7 @@ void cut_data_into_iovecs(std::vector<struct iovec> *iovecs,
     if (BAIDU_UNLIKELY(count == 0)) {
         return;
     }
-    // assuming each IOBuf has only one block
+    // Use count as the initial capacity.
     iovecs->reserve(count);
     iovecs->clear();
     for (size_t i = 0; i < count && iovecs->size() < IOV_MAX; ++i) {
@@ -2187,6 +2187,8 @@ ssize_t Socket::DoWrite(WriteRequest* req) {
     butil::IOBuf* data_list[DATA_LIST_MAX];
 #ifdef IO_URING_ENABLED
     std::variant<butil::IOBuf*, RegisteredRingBuffer*> mixed_data_list[DATA_LIST_MAX];
+    // If io_uring is used and this is not a stream, use mixed_data_list.
+    bool use_mixed_data_list = FLAGS_use_io_uring && _conn == nullptr;
 #endif
     size_t ndata = 0;
     for (WriteRequest* p = req; p != NULL && ndata < DATA_LIST_MAX;
@@ -2194,9 +2196,8 @@ ssize_t Socket::DoWrite(WriteRequest* req) {
         // LOG(INFO) << "socket: " << *this << " DoWrite, merging data of req: " << p <<
         //     ", data: " << req->data.to_string().substr(0, std::min(50, int(req->data.size())))
         //     << ", size: " << req->data.size();
-        data_list[ndata] = &p->data;
 #ifdef IO_URING_ENABLED
-        if (FLAGS_use_io_uring) {
+        if (use_mixed_data_list) {
             if (p->ring_buf_data.ring_buf != nullptr) {
                 // LOG(INFO) << "ring buf data: " << &p->ring_buf_data;
                 mixed_data_list[ndata] = &p->ring_buf_data;
@@ -2204,9 +2205,13 @@ ssize_t Socket::DoWrite(WriteRequest* req) {
                 // LOG(INFO) << "iobuf data: " << &p->data;
                 mixed_data_list[ndata] = &p->data;
             }
+        } else {
+            data_list[ndata] = &p->data;
         }
-#endif
         ndata++;
+#else
+        data_list[ndata++] = &p->data;
+#endif
     }
 
     if (ssl_state() == SSL_OFF) {
@@ -2220,8 +2225,7 @@ ssize_t Socket::DoWrite(WriteRequest* req) {
             }
 #endif
 #ifdef IO_URING_ENABLED
-            if (FLAGS_use_io_uring) {
-                butil::IOBuf::cut_multiple_into_iovecs(&iovecs_, data_list, ndata);
+            if (use_mixed_data_list) {
                 cut_data_into_iovecs(&iovecs_, mixed_data_list, ndata);
                 // for (auto iov: iovecs_) {
                 //     LOG(INFO) << "iov: " << std::string_view((char*)iov.iov_base, iov.iov_len);
@@ -2261,6 +2265,11 @@ ssize_t Socket::DoWrite(WriteRequest* req) {
 #endif
         }
     }
+
+#ifdef IO_URING_ENABLED
+    // io_uring and SSL is not supported.
+    CHECK(!use_mixed_data_list);
+#endif
 
     CHECK_EQ(SSL_CONNECTED, ssl_state());
     if (_conn) {
