@@ -3312,6 +3312,7 @@ void Socket::RingNonFixedWriteCb(int nw) {
     WriteRequest *req = io_uring_write_req_;
     CHECK(req->socket == this);
     if (nw > 0) {
+        // ring_buf is not null if this is a fixed write of the socket.
         if (req->ring_buf_data.ring_buf != nullptr) {
             // LOG(INFO) << "socket: " << *this << "Handle fixed write res, nw: " << nw
             //     << ", ring_bufsize: " << req->ring_buf_data.ring_buf_size
