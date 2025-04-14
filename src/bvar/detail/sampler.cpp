@@ -96,7 +96,7 @@ private:
             _created = true;
             if (!registered_atfork) {
                 registered_atfork = true;
-                pthread_atfork(NULL, NULL, child_callback_atfork);
+                // pthread_atfork(NULL, NULL, child_callback_atfork);
             }
         }
     }
