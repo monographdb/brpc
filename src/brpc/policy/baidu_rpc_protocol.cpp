@@ -311,7 +311,18 @@ void EndRunningCallMethodInPool(
     return EndRunningUserCodeInPool(CallMethodInBackupThread, args);
 };
 
+struct LogGuard {
+    LogGuard(InputMessageBase* msg) : msg_(msg) {
+        LOG(INFO) << "ProcessRpcRequest begins, msg: " << msg_;
+    }
+    ~LogGuard() {
+        LOG(INFO) << "ProcessRpcRequest returns, msg: " << msg_;
+    }
+    InputMessageBase* msg_{};
+};
 void ProcessRpcRequest(InputMessageBase* msg_base) {
+    LogGuard guard(msg_base);
+
     const int64_t start_parse_us = butil::cpuwide_time_us();
     DestroyingPtr<MostCommonMessage> msg(static_cast<MostCommonMessage*>(msg_base));
     SocketUniquePtr socket_guard(msg->ReleaseSocket());

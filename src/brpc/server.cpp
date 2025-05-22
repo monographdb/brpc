@@ -1204,6 +1204,16 @@ int Server::Join() {
         return -1;
     }
     if (_am) {
+        LOG(INFO) << "Calling server acceptor join... connections: ";
+        std::vector<SocketId> checking_fds;
+        _am->ListConnections(&checking_fds);
+        for (const auto &id : checking_fds) {
+            LOG(INFO) << "socket id: " << id;
+            SocketUniquePtr sock;
+            if (Socket::Address(id, &sock) == 0) {
+                LOG(INFO) << "socket: " << *sock;
+            }
+        }
         _am->Join();
     }
     if (_internal_am) {

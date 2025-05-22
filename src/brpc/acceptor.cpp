@@ -332,6 +332,11 @@ void Acceptor::OnNewConnectionsUntilEAGAIN(Socket* acception) {
                 // running or not. Otherwise, `Acceptor::BeforeRecycle'
                 // may be called (inside Socket::OnRecycle) after `Acceptor'
                 // has been destroyed
+                LOG(INFO) << "acceptr: " << am << ", socket_map insert socket id: " << socket_id
+                << ", socket: " << sock.get() << ", detail: ";
+                if (sock.get() != nullptr) {
+                    LOG(INFO) << "socket: " << sock.get() << " detail: " << *sock;
+                }
                 am->_socket_map.insert(socket_id, ConnectStatistics());
             }
             if (!is_running) {
@@ -369,6 +374,8 @@ void Acceptor::BeforeRecycle(Socket* sock) {
     }
     // If a Socket could not be addressed shortly after its creation, it
     // was not added into `_socket_map'.
+    LOG(INFO) << "acceptr: " << this << ", socket_map erase socket id: " << sock->id()
+        << ", socket: " << sock << ", " << *sock;
     _socket_map.erase(sock->id());
     if (_socket_map.empty()) {
         _empty_cond.Broadcast();

@@ -170,7 +170,9 @@ ParseResult InputMessenger::CutInputMessage(
 
 void* ProcessInputMessage(void* void_arg) {
     InputMessageBase* msg = static_cast<InputMessageBase*>(void_arg);
+    LOG(INFO) << "ProcessInputMessage: " << msg;
     msg->_process(msg);
+    LOG(INFO) << "ProcessInputMessage: " << msg << " finishes";
     return NULL;
 }
 
@@ -195,6 +197,7 @@ static void QueueMessage(InputMessageBase* to_run_msg,
                           BTHREAD_ATTR_PTHREAD :
                           BTHREAD_ATTR_NORMAL) | BTHREAD_NOSIGNAL;
     tmp.keytable_pool = keytable_pool;
+    LOG(INFO) << "QueueMessage, msg: " << to_run_msg;
     if (bthread_start_background(
             &th, &tmp, ProcessInputMessage, to_run_msg) == 0) {
         ++*num_bthread_created;
@@ -205,6 +208,7 @@ static void QueueMessage(InputMessageBase* to_run_msg,
 
 InputMessenger::InputMessageClosure::~InputMessageClosure() noexcept(false) {
     if (_msg) {
+        LOG(INFO) << "InputMessageClosure last msg: " << _msg;
         ProcessInputMessage(_msg);
     }
 }
@@ -224,7 +228,8 @@ int InputMessenger::ProcessNewMessage(
 
     // Avoid this socket to be closed due to idle_timeout_s
     m->_last_readtime_us.store(received_us, butil::memory_order_relaxed);
-    
+
+    LOG(INFO) << "socket: "<< *m << ", ProcessNewMessage, data: " << m->_read_buf.to_string();
     size_t last_size = m->_read_buf.length();
     int num_bthread_created = 0;
     while (1) {
