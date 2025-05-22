@@ -410,6 +410,7 @@ void RingListener::RecycleWriteBuf(uint16_t buf_idx) {
     } else {
         recycle_buf_cnt_.fetch_add(1, std::memory_order_relaxed);
         write_bufs_.enqueue(buf_idx);
+        RingModule::NotifyWorker(task_group_->group_id_);
     }
 }
 
