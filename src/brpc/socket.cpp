@@ -1214,6 +1214,7 @@ void Socket::OnRecycle() {
     if (sp) {
         sp->RemoveRefManually();
     }
+    LOG(INFO) << "socket: " << *this << " OnRecycle";
     const int prev_fd = _fd.exchange(-1, butil::memory_order_relaxed);
     if (ValidFileDescriptor(prev_fd)) {
         if (_on_edge_triggered_events != NULL) {

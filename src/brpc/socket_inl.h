@@ -110,7 +110,10 @@ inline int Socket::Dereference() {
                     expected_vref, MakeVRef(id_ver + 2, 0),
                     butil::memory_order_acquire,
                     butil::memory_order_relaxed)) {
+                LOG(INFO) << "socket: " << this << ", " << *this
+                    << " version increase 2 success, calling OnRecycle...";
                 OnRecycle();
+                LOG(INFO) << "socket: " << this << ", " << *this << ", after OnRecycle, return resource";
                 return_resource(SlotOfSocketId(id));
                 return 1;
             }
