@@ -20,6 +20,8 @@
 #ifndef BRPC_SOCKET_INL_H
 #define BRPC_SOCKET_INL_H
 
+#include <boost/stacktrace.hpp>
+
 
 namespace brpc {
 
@@ -112,6 +114,7 @@ inline int Socket::Dereference() {
                     butil::memory_order_relaxed)) {
                 LOG(INFO) << "socket: " << this << ", " << *this
                     << " version increase 2 success, calling OnRecycle...";
+                LOG(INFO) << boost::stacktrace::stacktrace();
                 OnRecycle();
                 LOG(INFO) << "socket: " << this << ", " << *this << ", after OnRecycle, return resource";
                 return_resource(SlotOfSocketId(id));

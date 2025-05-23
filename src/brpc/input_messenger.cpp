@@ -229,7 +229,8 @@ int InputMessenger::ProcessNewMessage(
     // Avoid this socket to be closed due to idle_timeout_s
     m->_last_readtime_us.store(received_us, butil::memory_order_relaxed);
 
-    LOG(INFO) << "socket: "<< *m << ", ProcessNewMessage, data: " << m->_read_buf.to_string();
+    LOG(INFO) << "socket: "<< *m << ", ProcessNewMessage, data: " << m->_read_buf.to_string()
+        << " read buf length: " << m->_read_buf.length();
     size_t last_size = m->_read_buf.length();
     int num_bthread_created = 0;
     while (1) {
@@ -372,6 +373,7 @@ void InputMessenger::OnNewMessages(Socket* m) {
                 // (implied by m->_read_buf.empty), which may produce a new
                 // `InputMessageBase' under some protocols such as HTTP
                 LOG_IF(WARNING, FLAGS_log_connection_close) << *m << " was closed by remote side";
+                LOG(INFO) << "socket: " << *m << " was closed by remote side, read eof";
                 read_eof = true;                
             } else if (errno != EAGAIN) {
                 if (errno == EINTR) {
