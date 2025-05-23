@@ -787,6 +787,7 @@ int Socket::Create(const SocketOptions& options, SocketId* id) {
     m->_remote_side = options.remote_side;
     m->_on_edge_triggered_events = options.on_edge_triggered_events;
     m->_user = options.user;
+    LOG(INFO) << "Socket::Create, set socket: " << m << ", user to: " << m->_user;
     m->_conn = options.conn;
     m->_app_connect = options.app_connect;
     // nref can be non-zero due to concurrent AddressSocket().
@@ -1205,16 +1206,20 @@ void Socket::OnRecycle() {
         _conn = NULL;
         saved_conn->BeforeRecycle(this);
     }
+    LOG(INFO) << "socket: " << *this << " OnRecycle";
     if (_user) {
         SocketUser* const saved_user = _user;
+        LOG(INFO) << "socket: " << *this  << " _user: " << saved_user << ", BeforeRecycle...";
         _user = NULL;
         saved_user->BeforeRecycle(this);
+        LOG(INFO) << "socket: " << *this  << " _user: " << saved_user << ", BeforeRecycle finishes";
+    } else {
+        LOG(INFO) << "socket: " << *this << " _user empty, skip BeforeRecycle";
     }
     SharedPart* sp = _shared_part.exchange(NULL, butil::memory_order_acquire);
     if (sp) {
         sp->RemoveRefManually();
     }
-    LOG(INFO) << "socket: " << *this << " OnRecycle";
     const int prev_fd = _fd.exchange(-1, butil::memory_order_relaxed);
     if (ValidFileDescriptor(prev_fd)) {
         if (_on_edge_triggered_events != NULL) {
@@ -1589,6 +1594,7 @@ int Socket::ConnectIfNot(const timespec* abstime, WriteRequest* req) {
     SocketUniquePtr s;
     ReAddress(&s);
     req->socket = s.get();
+    LOG(INFO) << "Socket::ConnectIfNot, socket: " << *s << " Connect...";
     if (_conn) {
         if (_conn->Connect(this, abstime, KeepWriteIfConnected, req) < 0) {
             return -1;
@@ -1598,6 +1604,7 @@ int Socket::ConnectIfNot(const timespec* abstime, WriteRequest* req) {
             return -1;
         }
     }
+    LOG(INFO) << "Socket::ConnectIfNot, socket: " << *s << " Connect success";
     s.release();
     return 1;    
 }
@@ -3449,6 +3456,7 @@ ostream& operator<<(ostream& os, const brpc::Socket& sock) {
     if (fd >= 0) {
         os << " fd=" << fd;
     }
+    os << " socket user=" << sock.user();
     os << " remote addr=" << sock.remote_side();
     os << " local addr=" << sock.local_side();
     const int local_port = sock.local_side().port;

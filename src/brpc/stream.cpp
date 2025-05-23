@@ -203,6 +203,7 @@ void* Stream::RunOnConnect(void *arg) {
 
 int Stream::Connect(Socket* ptr, const timespec*,
                     int (*on_connect)(int, int, void *), void *data) {
+    LOG(INFO) << "Stream::Connect, socket: " << *ptr;
     CHECK_EQ(ptr->id(), _id);
     bthread_mutex_lock(&_connect_mutex);
     if (_connect_meta.on_connect != NULL) {

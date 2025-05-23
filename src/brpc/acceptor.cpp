@@ -167,11 +167,13 @@ int Acceptor::Initialize() {
                    << INITIAL_CONNECTION_CAP;
         return -1;
     }
+    LOG(INFO) << "Acceptor: " << this << ", initialized";
     return 0;    
 }
 
 // NOTE: Join() can happen before StopAccept()
 void Acceptor::Join() {
+    LOG(INFO) << "Acceptor: " << this << ", joining...";
     std::unique_lock<butil::Mutex> mu(_map_mutex);
     if (_status != STOPPING && _status != RUNNING) {  // no need to join.
         return;
@@ -195,6 +197,7 @@ void Acceptor::Join() {
         BAIDU_SCOPED_LOCK(_map_mutex);
         _status = READY;
     }
+    LOG(INFO) << "Acceptor: " << this << ", joined";
 }
 
 size_t Acceptor::ConnectionCount() const {
@@ -272,6 +275,8 @@ void Acceptor::OnNewConnectionsUntilEAGAIN(Socket* acception) {
         }
 
         Acceptor* am = dynamic_cast<Acceptor*>(acception->user());
+        LOG(INFO) << "OnNewConnectionsUntilEAGAIN, acception: " << acception
+            << ", acceptor: " << am;
         if (NULL == am) {
             LOG(FATAL) << "Impossible! acception->user() MUST be Acceptor";
             acception->SetFailed(EINVAL, "Impossible! acception->user() MUST be Acceptor");
@@ -365,6 +370,7 @@ void Acceptor::OnNewConnections(Socket* acception) {
 void Acceptor::BeforeRecycle(Socket* sock) {
     BAIDU_SCOPED_LOCK(_map_mutex);
     if (sock->id() == _acception_id) {
+        LOG(INFO) << "Acceptor::BeforeRecycle, sock->id() == _acception_id, return";
         // Set _listened_fd to -1 when acception socket has been recycled
         // so that we are ensured no more events will arrive (and `Join'
         // will return to its caller)
