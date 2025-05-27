@@ -280,6 +280,8 @@ int RingListener::SubmitFsync(RingFsyncData *args) {
     data |= OpCodeToInt(OpCode::Fsync);
     io_uring_sqe_set_data64(sqe, data);
     ++submit_cnt_;
+    // Submit immediately since fsync latency matters.
+    SubmitAll();
     return 0;
 }
 
