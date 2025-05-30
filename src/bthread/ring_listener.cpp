@@ -126,7 +126,7 @@ int RingListener::Register(brpc::Socket *sock) {
         reg_fds_.try_emplace(fd, fd_idx);
         sock->reg_fd_ = fd;
         sock->reg_fd_idx_ = fd_idx;
-        ret = SubmitRegisterFile(sock, &sock->reg_fd_, fd_idx);
+        ret = SubmitRegisterFile(sock, &sock->reg_fd_, fd_idx); // 函数里面也在设置sock->reg_fd_idx_ = fd_idx;
     }
 
     if (ret < 0) {
@@ -443,14 +443,14 @@ int RingListener::SubmitCancel(int fd) {
         data = UINT16_MAX << 16;
     }
 
-    io_uring_prep_cancel_fd(sqe, sfd, flags);
+    io_uring_prep_cancel_fd(sqe, sfd, flags); // fd 不清楚是否被remove
     data |= OpCodeToInt(OpCode::CancelRecv);
     io_uring_sqe_set_data64(sqe, data);
     if (fd_idx >= 0) {
-        sqe->cancel_flags |= IOSQE_FIXED_FILE;
+        sqe->cancel_flags |= IOSQE_FIXED_FILE;  // ？？
     }
 
-    reg_fds_.erase(it);
+    reg_fds_.erase(it);  // 如果不存在，这里可能会出问题
     submit_cnt_++;
     return 0;
 }

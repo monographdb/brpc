@@ -94,6 +94,7 @@ public:
 
     ~RingListener();
 
+    // init ring 的flag不太对，应该为sqpoll，而且后续不需要submit
     int Init();
 
     void Close() {
@@ -108,8 +109,12 @@ public:
         }
     }
 
+    // 注册socket fd
     int Register(brpc::Socket *sock);
 
+    // 把之前调用过 Register(socket) 的读数据任务添加到ring 中管理
+    // 有一项判断 `sfd = fd_idx >= 0 ? fd_idx : sock->fd();` 如果不调用，fd_idx 在未经过Register初始化时，未必为负值
+    // 函数命名可以改为AddRecv()
     int SubmitRecv(brpc::Socket *sock);
 
     int SubmitFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, uint32_t ring_buf_size);
@@ -128,6 +133,7 @@ public:
         return submit_cnt_ > 0 || cqe_ready_.load(std::memory_order_relaxed);
     }
 
+    // polling 不需要submit
     int SubmitAll();
 
     int Unregister(int fd) {
@@ -160,8 +166,10 @@ private:
         }
     }
 
+    // cancel ring中所有使用fd的request
     int SubmitCancel(int fd);
 
+    // update register fd
     int SubmitRegisterFile(brpc::Socket *sock, int *fd, int32_t fd_idx);
 
     void HandleCqe(io_uring_cqe *cqe);
