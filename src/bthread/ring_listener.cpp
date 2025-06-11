@@ -320,8 +320,6 @@ size_t RingListener::ExtPoll() {
         has_external_.store(true, std::memory_order_release);
     }
 
-    RecycleReturnedWriteBufs();
-
     // has_external_ should be updated before poll_status_ is checked.
     std::atomic_thread_fence(std::memory_order_release);
 

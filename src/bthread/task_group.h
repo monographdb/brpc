@@ -216,11 +216,8 @@ public:
 
     bool Notify();
 
-    bool TrySetExtTxProcFuncs();
-
     int group_id_{-1};
     // external tx processor functions. Only used with MonoRedis.
-    std::function<void()> tx_processor_exec_{nullptr};
     std::function<void(int16_t)> update_ext_proc_{nullptr};
     std::function<bool(bool)> override_shard_heap_{nullptr};
     std::function<bool()> has_tx_processor_work_{nullptr};
@@ -294,8 +291,6 @@ public:
     }
 
     bool Wait();
-
-    void RunExtTxProcTask();
 
     void ProcessModulesTask();
 

@@ -30,27 +30,6 @@
 
 DECLARE_bool(use_io_uring);
 
-extern std::function<std::tuple<std::function<void()>,
-        std::function<void(int16_t)>,
-        std::function<bool(bool)>,
-        std::function<bool()>>(int16_t)>
-        get_tx_proc_functors;
-
-extern std::atomic<bool> tx_proc_functors_set;
-
-int bthread_set_ext_tx_prc_func(
-        std::function<std::tuple<std::function<void()>,
-                std::function<void(int16_t)>,
-                std::function<bool(bool)>,
-                std::function<bool()>>(int16_t)> functors) {
-    if (get_tx_proc_functors == nullptr) {
-        get_tx_proc_functors = functors;
-        tx_proc_functors_set.store(true, std::memory_order_release);
-        return 0;
-    }
-    return -1;
-}
-
 extern std::array<eloq::EloqModule *, 10> registered_modules;
 extern std::atomic<int> registered_module_cnt;
 
