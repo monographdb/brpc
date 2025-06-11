@@ -1243,6 +1243,10 @@ bool TaskGroup::Notify() {
 bool TaskGroup::Wait(){
     _waiting.store(true, std::memory_order_release);
     _waiting_workers.fetch_add(1, std::memory_order_relaxed);
+
+    // Check any new module registered before checking modules' tasks.
+    CheckAndUpdateModules();
+
     std::unique_lock<std::mutex> lk(_mux);
     _cv.wait(lk, [this]()->bool {
         bthread_t tid;
@@ -1258,8 +1262,6 @@ bool TaskGroup::Wait(){
                 update_ext_proc_(-1);
             }
         }
-        // Check any new module registered before checking modules' tasks.
-        CheckAndUpdateModules();
 
         return HasTasks();
     });
@@ -1278,9 +1280,16 @@ void TaskGroup::RunExtTxProcTask() {
 }
 
 void TaskGroup::ProcessModulesTask() {
-    if (CheckAndUpdateModules()) {
-        NotifyRegisteredModules(WorkerStatus::Working);
+    int old_modules_cnt = modules_cnt_;
+
+    CheckAndUpdateModules();
+
+    int new_modules_cnt = modules_cnt_;
+    for (int i = old_modules_cnt; i < new_modules_cnt; ++i) {
+        eloq::EloqModule *module = registered_modules_[i];
+        module->ExtThdStart(group_id_);
     }
+
     for (auto *module : registered_modules_) {
         if (module != nullptr) {
             module->Process(group_id_);
@@ -1300,20 +1309,16 @@ bool TaskGroup::HasTasks() {
     return has_task;
 }
 
-bool TaskGroup::CheckAndUpdateModules() {
+void TaskGroup::CheckAndUpdateModules() {
     if (modules_cnt_ != registered_module_cnt.load(std::memory_order_acquire)) {
         registered_modules_ = registered_modules;
         modules_cnt_ = std::count_if(registered_modules_.begin(), registered_modules_.end(), [](eloq::EloqModule* module) {
             return module != nullptr;
         });
-        return true;
     }
-    return false;
 }
 
-
 void TaskGroup::NotifyRegisteredModules(WorkerStatus status) {
-    CheckAndUpdateModules();
     for (eloq::EloqModule *module : registered_modules_) {
         if (module != nullptr) {
             if (status == WorkerStatus::Sleep) {
