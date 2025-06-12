@@ -20,7 +20,7 @@
 #ifdef IO_URING_ENABLED
 #include "brpc/socket.h"
 #include "bthread/task_group.h"
-#include "bthread/brpc_module.h"
+#include "bthread/eloq_module.h"
 #include "bthread/inbound_ring_buf.h"
 #include "bthread/ring_write_buf_pool.h"
 #include "butil/threading/platform_thread.h"

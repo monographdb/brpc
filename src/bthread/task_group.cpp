@@ -37,7 +37,7 @@
 #include "bthread/timer_thread.h"
 #include "bthread/errno.h"
 #include "task_meta.h"
-#include "bthread/brpc_module.h"
+#include "bthread/eloq_module.h"
 #ifdef IO_URING_ENABLED
 #include <liburing.h>
 #include "ring_write_buf_pool.h"
