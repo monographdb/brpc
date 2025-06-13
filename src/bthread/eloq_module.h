@@ -26,14 +26,36 @@ namespace eloq {
         virtual ~EloqModule() {
         }
 
+        /**
+         * This func is called when worker starts running.
+         * @param thd_id
+         */
         virtual void ExtThdStart(int thd_id) = 0;
 
+        /**
+         * Called when worker stop running and sleep.
+         * @param thd_id
+         */
         virtual void ExtThdEnd(int thd_id) = 0;
 
+        /**
+         * How the module task is processed.
+         * @param thd_id
+         */
         virtual void Process(int thd_id) = 0;
 
+        /**
+         *
+         * @param thd_id
+         * @return whther the module has task to process.
+         */
         virtual bool HasTask(int thd_id) const = 0;
 
+        /**
+         * This func is for the module to wakeup the worker.
+         * @param thd_id
+         * @return true if the worker was in sleep and successfully notified.
+         */
         static bool NotifyWorker(int thd_id);
     };
 
