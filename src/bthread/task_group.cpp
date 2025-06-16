@@ -1213,7 +1213,7 @@ void print_task(std::ostream& os, bthread_t tid) {
 
 bool TaskGroup::Notify() {
     if (!_waiting.load(std::memory_order_relaxed)) {
-        return false;
+        return true;
     }
     std::unique_lock<std::mutex> lk(_mux);
     _cv.notify_one();

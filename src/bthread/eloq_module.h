@@ -54,7 +54,7 @@ namespace eloq {
         /**
          * This func is for the module to wakeup the worker.
          * @param thd_id
-         * @return true if the worker was in sleep and successfully notified.
+         * @return true if the worker is running or successfully notified.
          */
         static bool NotifyWorker(int thd_id);
     };
