@@ -29,13 +29,7 @@ void RingModule::ExtThdStart(int thd_id) {
 void RingModule::ExtThdEnd(int thd_id) { listeners_.at(thd_id)->ExtWakeup(); }
 
 void RingModule::Process(int thd_id) {
-    RingListener *listener = listeners_.at(thd_id);
-
-    listener->RecycleReturnedWriteBufs();
-
-    listener->SubmitAll();
-
-    listener->ExtPoll();
+    listeners_.at(thd_id)->ExtPoll();
 }
 
 bool RingModule::HasTask(int thd_id) const {
