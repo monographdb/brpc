@@ -17,29 +17,23 @@
  * under the License.
  */
 
-#pragma once
-#include "bthread/brpc_module.h"
-#include "bthread/types.h"
-#include <array>
-#include <thread>
+#ifndef BRPC_MODULE_H
+#define BRPC_MODULE_H
 
-#ifdef IO_URING_ENABLED
-class RingListener;
+namespace eloq {
 
-class RingModule : public eloq::EloqModule {
+class EloqModule {
 public:
-    void ExtThdStart(int thd_id) override;
+    virtual ~EloqModule() {};
 
-    void ExtThdEnd(int thd_id) override;
+    virtual void ExtThdStart(int thd_id) = 0;
+    virtual void ExtThdEnd(int thd_id) = 0;
+    virtual void Process(int thd_id) = 0;
+    virtual bool HasTask(int thd_id) const = 0;
 
-    void Process(int thd_id) override;
-
-    bool HasTask(int thd_id) const override;
-
-    void AddListener(int thd_id, RingListener *listener);
-
-private:
-    std::array<RingListener *, BTHREAD_MAX_CONCURRENCY> listeners_{};
+    static bool NotifyWorker(int thd_id);
 };
 
-#endif
+}  // namespace bthread
+
+#endif //BRPC_MODULE_H
