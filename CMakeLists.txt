@@ -29,7 +29,7 @@ option(BUILD_UNIT_TESTS "Whether to build unit tests" OFF)
 option(BUILD_BRPC_TOOLS "Whether to build brpc tools" ON)
 option(DOWNLOAD_GTEST "Download and build a fresh copy of googletest. Requires Internet access." ON)
 
-option(IO_URING_ENABLED "Enable IO uring based network" OFF)
+option(IO_URING_ENABLED "Enable IO uring based network" ON)
 if (IO_URING_ENABLED)
     message("IO_URING_ENABLED: " ${IO_URING_ENABLED})
     add_compile_definitions(IO_URING_ENABLED)
