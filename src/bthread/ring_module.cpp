@@ -29,6 +29,7 @@ void RingModule::ExtThdStart(int thd_id) {
 void RingModule::ExtThdEnd(int thd_id) { listeners_.at(thd_id)->ExtWakeup(); }
 
 void RingModule::Process(int thd_id) {
+    LOG(WARNING) << "vfish:thread" << thd_id <<" exec extpoll";
     listeners_.at(thd_id)->ExtPoll();
 }
 

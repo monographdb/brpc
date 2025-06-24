@@ -94,7 +94,6 @@ public:
 
     ~RingListener();
 
-    // init ring 的flag不太对，应该为sqpoll，而且后续不需要submit
     int Init();
 
     void Close() {
@@ -110,20 +109,18 @@ public:
     }
 
     // 注册socket fd
-    int Register(brpc::Socket *sock);
-
+    int AddRegister(brpc::Socket *sock);
+    
     // 把之前调用过 Register(socket) 的读数据任务添加到ring 中管理
-    // 有一项判断 `sfd = fd_idx >= 0 ? fd_idx : sock->fd();` 如果不调用，fd_idx 在未经过Register初始化时，未必为负值
-    // 函数命名可以改为AddRecv()
-    int SubmitRecv(brpc::Socket *sock);
+    int AddRecv(brpc::Socket *sock);
 
-    int SubmitFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, uint32_t ring_buf_size);
+    int AddFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, uint32_t ring_buf_size);
 
-    int SubmitNonFixedWrite(brpc::Socket *sock);
+    int AddNonFixedWrite(brpc::Socket *sock);
 
-    int SubmitWaitingNonFixedWrite(brpc::Socket *sock);
+    int AddWaitingNonFixedWrite(brpc::Socket *sock);
 
-    int SubmitFsync(RingFsyncData *args);
+    int AddFsync(RingFsyncData *args);
 
     bool HasJobsToSubmit() const {
         return submit_cnt_ > 0;
@@ -138,7 +135,7 @@ public:
 
     int Unregister(int fd) {
         // TODO(zkl): should wait for the cancel cqe?
-        return SubmitCancel(fd);
+        return AddRequestCancel(fd);
     }
 
     void PollAndNotify();
@@ -160,6 +157,20 @@ public:
     void RecycleWriteBuf(uint16_t buf_idx);
 
 private:
+
+    // register cqe data
+    struct RegisterData{
+        brpc::Socket *sock_;
+        bool finish_{false};
+        int res_{-1};
+        bthread::Mutex mutex_;
+        bthread::ConditionVariable cv_;
+
+        RegisterData(brpc::Socket *sock):sock_(sock){}
+    };
+    
+    
+
     void FreeBuf() {
         if (in_buf_ != nullptr) {
             free(in_buf_);
@@ -167,15 +178,16 @@ private:
     }
 
     // cancel ring中所有使用fd的request
-    int SubmitCancel(int fd);
+    int AddRequestCancel(int fd);
 
     // update register fd
-    int SubmitRegisterFile(brpc::Socket *sock, int *fd, int32_t fd_idx);
+    int AddFileRegister(brpc::Socket *sock, int *fd, int32_t fd_idx);
 
     void HandleCqe(io_uring_cqe *cqe);
 
     enum struct OpCode : uint8_t {
-        Recv = 0,
+        Invalid = 0, // 未初始化
+        Recv,
         CancelRecv,
         RegisterFile,
         // TODO(zkl): Remove (Non)FixedWrite, merge into Write, WriteFinish
@@ -254,7 +266,7 @@ private:
     // cqe_ready_ is set by the ring listener and unset by the worker
     std::atomic<bool> cqe_ready_{false};
     uint16_t submit_cnt_{0};
-    std::unordered_map<int, int> reg_fds_;
+    std::unordered_map<int, int> reg_fds_;  // fd --> registered fd array index
     std::mutex mux_;
     std::condition_variable cv_;
     std::thread poll_thd_;
@@ -272,8 +284,10 @@ private:
         buf_ring_size
     };
 
+    // 工作线程与背景线程交互变量
     std::atomic<bool> has_external_{true};
 
+    // 始终存在冲突，尽管冲突的概率很小？
     std::vector<uint16_t> free_reg_fd_idx_;
 
     std::unique_ptr<RingWriteBufferPool> write_buf_pool_;
@@ -281,6 +295,8 @@ private:
     std::atomic<int64_t> recycle_buf_cnt_{0};
 
     inline static size_t buf_length = sysconf(_SC_PAGESIZE);
+
+    // inline static size_t buf_ring_size = 2;
     inline static size_t buf_ring_size = 1024;
 
     RingModule *ring_module_{};

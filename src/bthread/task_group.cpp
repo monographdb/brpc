@@ -159,7 +159,7 @@ bool TaskGroup::wait_task(bthread_t* tid) {
             RunExtTxProcTask();
         }
 
-        ProcessModulesTask();
+        ProcessModulesTask();  // ring module task
 
 #ifdef IO_URING_ENABLED
         if (FLAGS_use_io_uring && ring_listener_ != nullptr) {
@@ -1343,15 +1343,17 @@ bool TaskGroup::TrySetExtTxProcFuncs() {
 
 #ifdef IO_URING_ENABLED
 int TaskGroup::RegisterSocket(brpc::Socket *sock) {
-    return ring_listener_->Register(sock);
+    // ring_listener_->AddRegister(sock);
+
+    return SocketRecv(sock);
 }
 
 int TaskGroup::UnregisterSocket(int fd) {
     return ring_listener_->Unregister(fd);
 }
 
-void TaskGroup::SocketRecv(brpc::Socket *sock) {
-  ring_listener_->SubmitRecv(sock);
+int TaskGroup::SocketRecv(brpc::Socket *sock) {
+    return ring_listener_->AddRecv(sock);
 }
 
 int TaskGroup::SocketFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, uint32_t ring_buf_size) {
@@ -1363,7 +1365,7 @@ int TaskGroup::SocketFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, uint3
   brpc::SocketUniquePtr ptr_for_async_write;
   sock->ReAddress(&ptr_for_async_write);
 
-  int ret = ring_listener_->SubmitFixedWrite(sock, ring_buf_idx, ring_buf_size);
+  int ret = ring_listener_->AddFixedWrite(sock, ring_buf_idx, ring_buf_size);
   if (ret == 0) {
     (void)ptr_for_async_write.release();
   }
@@ -1380,7 +1382,7 @@ int TaskGroup::SocketNonFixedWrite(brpc::Socket *sock) {
   brpc::SocketUniquePtr ptr_for_async_write;
   sock->ReAddress(&ptr_for_async_write);
 
-  int ret = ring_listener_->SubmitNonFixedWrite(sock);
+  int ret = ring_listener_->AddNonFixedWrite(sock);
   if (ret == 0) {
     (void)ptr_for_async_write.release();
   }
@@ -1389,7 +1391,7 @@ int TaskGroup::SocketNonFixedWrite(brpc::Socket *sock) {
 }
 
 int TaskGroup::SocketWaitingNonFixedWrite(brpc::Socket *sock) {
-    int ret = ring_listener_->SubmitWaitingNonFixedWrite(sock);
+    int ret = ring_listener_->AddWaitingNonFixedWrite(sock);
     if (ret != 0) {
         LOG(FATAL) << "Submit Waiting Fixed write fails. Socket: " << *sock;
     }
@@ -1400,7 +1402,7 @@ int TaskGroup::RingFsync(int fd) {
     RingFsyncData args;
     args.fd_ = fd;
 
-    int res = ring_listener_->SubmitFsync(&args);
+    int res = ring_listener_->AddFsync(&args);
     if (res != 0) {
         return -1;
     }
