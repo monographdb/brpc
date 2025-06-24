@@ -681,12 +681,29 @@ int Socket::ResetFileDescriptor(int fd, size_t bound_gid) {
         ReAddress(&socket_uptr);
         (void)socket_uptr.release();
         // Start bthread that continously processes messages of this socket.
-        bthread_t tid;
+        bthread_t b_tid;
         attr.keytable_pool = _keytable_pool;
           // TODO(zkl): handle SocketRegister error return -1
           //  should wait for the recv cqe here?
-        bthread_start_from_bound_group(bound_gid, &tid, &attr, SocketRegister,
-                                       this);
+
+          //   TODO：因为原来是异步的，启了一个bthread，但实际上应该wait，在这里wait，
+        SocketRegisterArg arg;
+        arg.sock = this;
+        arg.ret = 0;
+        bthread_start_from_bound_group(bound_gid, &b_tid, &attr, SocketRegister, &arg);
+        void* ret_val = nullptr;
+        bthread_join(b_tid, &ret_val);
+
+        if(arg.ret != 0){
+            LOG(ERROR) << "fail to register at ResetFileDescriptor";
+        }
+
+        // int result = reinterpret_cast<int*>(ret_val);
+        // LOG(INFO) << "bthread 返回结果：" << result;
+
+        // TODO：这里也应该判断返回值结果
+                    //                    PLOG(ERROR) << "Fail to add SocketId=" << id()
+                    //   << " into EventDispatcher";
       } else {
 #endif
         if (GetGlobalEventDispatcher(fd).AddConsumer(id(), fd) != 0) {
@@ -1319,21 +1336,27 @@ void *Socket::SocketProcess(void *arg) {
     return nullptr;
 }
 
+
 void *Socket::SocketRegister(void *arg) {
   bthread::TaskGroup *cur_group = bthread::TaskGroup::VolatileTLSTaskGroup();
 
-  Socket *sock = static_cast<Socket *>(arg);
+//   Socket *sock = static_cast<Socket *>(arg);
+  SocketRegisterArg *sock_arg = static_cast<SocketRegisterArg *>(arg);
+  Socket *sock = sock_arg->sock;
   SocketUniquePtr s_uptr{sock};
 
-  int reg_ret = cur_group->RegisterSocket(sock);
-  if (reg_ret < 0) {
-    LOG(ERROR) << "Failed to register the socket " << sock->id()
-               << " to the IO uring listener.";
-      // TODO(zkl): return the result to ResetFileDescriptor
-    return nullptr;
-  }
-
   sock->bound_g_ = cur_group;
+  sock_arg->ret = cur_group->RegisterSocket(sock);
+  LOG(WARNING) << "ret value in SocketRegister:" << sock_arg->ret;
+
+//   if (reg_ret < 0) {
+//     LOG(ERROR) << "Failed to register the socket " << sock->id()
+//                << " to the IO uring listener.";
+//       // TODO(zkl): return the result to ResetFileDescriptor
+//     return nullptr;
+//   }
+
+  
   return nullptr;
 }
 
