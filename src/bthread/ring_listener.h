@@ -127,7 +127,8 @@ public:
     }
 
     bool HasTasks() const {
-        return submit_cnt_ > 0 || cqe_ready_.load(std::memory_order_relaxed);
+        return submit_cnt_ > 0 || cqe_ready_.load(std::memory_order_relaxed) || recycle_buf_cnt_.load(
+                   std::memory_order_relaxed);
     }
 
     // polling 不需要submit

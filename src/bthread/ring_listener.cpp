@@ -20,7 +20,7 @@
 #ifdef IO_URING_ENABLED
 #include "brpc/socket.h"
 #include "bthread/task_group.h"
-#include "bthread/brpc_module.h"
+#include "bthread/eloq_module.h"
 #include "bthread/inbound_ring_buf.h"
 #include "bthread/ring_write_buf_pool.h"
 #include "butil/threading/platform_thread.h"
@@ -353,6 +353,8 @@ int RingListener::AddFsync(RingFsyncData *args) {
     data |= OpCodeToInt(OpCode::Fsync);
     io_uring_sqe_set_data64(sqe, data);
     ++submit_cnt_;
+    // Submit immediately since fsync latency matters.
+    SubmitAll();
     return 0;
 }
 
@@ -389,8 +391,6 @@ size_t RingListener::ExtPoll() {
     if (!has_external_.load(std::memory_order_relaxed)) {
         has_external_.store(true, std::memory_order_release);
     }
-
-    RecycleReturnedWriteBufs();
 
     // has_external_ should be updated before poll_status_ is checked.
     std::atomic_thread_fence(std::memory_order_release); // 单线程需要吗？
@@ -487,6 +487,7 @@ void RingListener::RecycleWriteBuf(uint16_t buf_idx) {
     } else {
         recycle_buf_cnt_.fetch_add(1, std::memory_order_relaxed);
         write_bufs_.enqueue(buf_idx);
+        RingModule::NotifyWorker(task_group_->group_id_);
     }
 }
 

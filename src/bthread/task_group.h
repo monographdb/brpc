@@ -214,13 +214,13 @@ public:
     // process make go on indefinitely.
     void push_rq(bthread_t tid);
 
-    bool Notify();
+    void Notify();
 
-    bool TrySetExtTxProcFuncs();
+    // Notify worker, return true if worker is notified from sleep.
+    bool NotifyIfWaiting();
 
     int group_id_{-1};
     // external tx processor functions. Only used with MonoRedis.
-    std::function<void()> tx_processor_exec_{nullptr};
     std::function<void(int16_t)> update_ext_proc_{nullptr};
     std::function<bool(bool)> override_shard_heap_{nullptr};
     std::function<bool()> has_tx_processor_work_{nullptr};
@@ -290,18 +290,19 @@ public:
     }
 
     bool steal_from_others(bthread_t* tid) {
+#ifndef BTHREAD_DONT_SAVE_PARKING_STATE
+        _last_pl_state = _pl->get_state();
+#endif
         return _control->steal_task(tid, &_steal_seed, _steal_offset);
     }
 
     bool Wait();
 
-    void RunExtTxProcTask();
-
     void ProcessModulesTask();
 
     bool HasTasks();
 
-    bool CheckAndUpdateModules();
+    void CheckAndUpdateModules();
 
     enum struct WorkerStatus
     {
