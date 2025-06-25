@@ -694,11 +694,11 @@ int Socket::ResetFileDescriptor(int fd, size_t bound_gid) {
         void* ret_val = nullptr;
         bthread_join(b_tid, &ret_val);
 
-        if(arg.ret != 0){
+        if(arg.ret < 0){
             LOG(ERROR) << "fail to register at ResetFileDescriptor";
         }
 
-        LOG(WARNING) << "ret_val:" << arg.ret;
+        LOG(WARNING) << "ResetFileDescriptor():ret_val:" << arg.ret;
         // int result = reinterpret_cast<int*>(ret_val);
         // LOG(INFO) << "bthread 返回结果：" << result;
 

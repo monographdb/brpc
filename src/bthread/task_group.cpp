@@ -1311,6 +1311,7 @@ int TaskGroup::RegisterSocket(brpc::Socket *sock) {
 
     LOG(WARNING) << "register finish, then to socket Receive";
     return SocketRecv(sock);
+    // return 0;
 }
 
 int TaskGroup::UnregisterSocket(int fd) {

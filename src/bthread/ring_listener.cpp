@@ -145,8 +145,9 @@ int RingListener::AddRegister(brpc::Socket *sock) {
     if (it != reg_fds_.end()) {
         LOG(ERROR) << "Socket " << sock->id() << ", fd: " << sock->fd()
                << " has been registered before.";
-        int ret = AddRecv(sock);
-        return ret;
+        return 0;
+        // int ret = AddRecv(sock);
+        // return ret;
     }
 
     sock->reg_fd_idx_ = -1;
@@ -154,6 +155,7 @@ int RingListener::AddRegister(brpc::Socket *sock) {
     if (free_reg_fd_idx_.empty())
         return -1;
     
+
     uint16_t fd_idx = free_reg_fd_idx_.back();
     free_reg_fd_idx_.pop_back();
 
@@ -164,6 +166,7 @@ int RingListener::AddRegister(brpc::Socket *sock) {
              << task_group_->group_id_;
         return -1;
     }
+    // registered_fds[fd_idx] = sock->reg_fd_;
     io_uring_prep_files_update(sqe, &sock->reg_fd_, 1, fd_idx);
     
     RegisterData cqeData(sock);
@@ -192,6 +195,10 @@ int RingListener::AddRegister(brpc::Socket *sock) {
         sock->reg_fd_idx_ = fd_idx;
         LOG(WARNING) << "AddRegister res:" << cqeData.res_ \
         << ",socket fd:" << sock->fd() << ", reg_fd_idx:" << sock->reg_fd_idx_;
+
+        // ------------------------------------------------------
+        // AddRecv(sock);
+        // ------------------------------------------------------
         return 0;
     }
 }
@@ -208,18 +215,19 @@ int RingListener::AddRecv(brpc::Socket *sock) {
     int sfd = sock->fd();
     sqe->flags |= IOSQE_BUFFER_SELECT;
 
-    // if(sock->reg_fd_idx_ >= 0){
-    //     sfd = sock->reg_fd_idx_;
-    //     sqe->flags |= IOSQE_FIXED_FILE;
-    //     LOG(WARNING) << "reg fd idx:" << sfd;
-    // }
+    if(sock->reg_fd_idx_ >= 0){
+        sfd = sock->reg_fd_idx_;
+        sqe->flags |= IOSQE_FIXED_FILE;
+        LOG(WARNING) << "reg fd idx:" << sfd;
+    }
 
-    io_uring_prep_recv_multishot(sqe, sfd, NULL, 0, 0); // IOSQE_BUFFER_SELEC & MSG_WAITALL
 
-    // uint64_t data = reinterpret_cast<uint64_t>(sock) << 16;
-    RegisterData cqeData(sock);
-    cqeData.res_ = -1;
-    uint64_t data = reinterpret_cast<uint64_t>(&cqeData) << 16;
+    io_uring_prep_recv_multishot(sqe, sfd, NULL, 0, 0); 
+
+    RegisterData* cqeDataPtr = new RegisterData(sock);
+    
+    cqeDataPtr->res_ = -1;
+    uint64_t data = reinterpret_cast<uint64_t>(cqeDataPtr) << 16;
     data |= OpCodeToInt(OpCode::Recv);
 
     io_uring_sqe_set_data64(sqe, data);
@@ -230,15 +238,15 @@ int RingListener::AddRecv(brpc::Socket *sock) {
 
     ++submit_cnt_;
 
-    // wait
+    cqeDataPtr->need_notify_ = true; // wait
     {
-        std::unique_lock lk(cqeData.mutex_);
-        while(!cqeData.finish_)
-            cqeData.cv_.wait(lk);
+        std::unique_lock lk(cqeDataPtr->mutex_);
+        while(!cqeDataPtr->finish_)
+            cqeDataPtr->cv_.wait(lk);
     }
 
-    LOG(WARNING) << "AddRecv finish wait, res:" << cqeData.res_;    
-    return cqeData.res_;
+    LOG(WARNING) << "AddRecv finish wait, res:" << cqeDataPtr->res_;    
+    return cqeDataPtr->res_;
 }
 
 int RingListener::AddFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, uint32_t ring_buf_size) {
@@ -570,9 +578,11 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
                 HandleRecv(sock, cqe);
             
             } else {
-                LOG(WARNING) << "error at recv, errno:" << cqe->res << ", sock fd:" << sock->fd() << ",reg fd:" << sock->reg_fd_;
+                LOG(WARNING) << "error at recv, errno:" << cqe->res << ", sock fd:" << sock->fd() << ",reg fd idx:" << sock->reg_fd_idx_;
             }
+            if(cqeDataPtr->need_notify_ == true)
             {
+                cqeDataPtr->need_notify_ = false;
                 LOG(WARNING) << "handleCQE:Recv";
                 std::unique_lock lock(cqeDataPtr->mutex_);
                 cqeDataPtr->res_ = cqe->res;
@@ -610,7 +620,6 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
             // 在这里recv试试
             LOG(WARNING) << "HandleCqe_RegisterFile res:" << cqe->res;
 
-            
             // brpc::Socket *sock = reinterpret_cast<brpc::Socket *>(data >> 16);
             // if (cqe->res < 0) {
             //     LOG(WARNING) << "IO uring file registration failed, errno: " << cqe->res
@@ -679,6 +688,7 @@ void RingListener::HandleRecv(brpc::Socket *sock, io_uring_cqe *cqe) {
         // it's not possible to return a CQE with a non-zero result and not have a
         // buffer attached.
         if (cqe->flags & IORING_CQE_F_BUFFER) {
+            LOG(WARNING) << "cqe flags:" << cqe->flags;
             buf_id = cqe->flags >> IORING_CQE_BUFFER_SHIFT;
             CHECK(nw > 0);
         }

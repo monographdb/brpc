@@ -164,6 +164,7 @@ private:
         brpc::Socket *sock_;
         bool finish_{false};
         int res_{-1};
+        bool need_notify_;
         bthread::Mutex mutex_;
         bthread::ConditionVariable cv_;
 
@@ -290,6 +291,7 @@ private:
 
     // 始终存在冲突，尽管冲突的概率很小？
     std::vector<uint16_t> free_reg_fd_idx_;
+    // int registered_fds[1024];
 
     std::unique_ptr<RingWriteBufferPool> write_buf_pool_;
     moodycamel::ConcurrentQueue<uint16_t> write_bufs_;
