@@ -1307,8 +1307,9 @@ void TaskGroup::NotifyRegisteredModules(WorkerStatus status) {
 
 #ifdef IO_URING_ENABLED
 int TaskGroup::RegisterSocket(brpc::Socket *sock) {
-    // ring_listener_->AddRegister(sock);
+    ring_listener_->AddRegister(sock);
 
+    LOG(WARNING) << "register finish, then to socket Receive";
     return SocketRecv(sock);
 }
 

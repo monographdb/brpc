@@ -57,6 +57,16 @@ int main(int argc, char* argv[]) {
 
     // Send a request and wait for the response every 1 second.
     int log_id = 0;
+
+    // size_t msg_size = 40960;
+    // char my_message[40960];
+    // for(int i=0;i<10;i++){
+    //     for(int j=0;j<4096;j++)
+    //         my_message[i * 4096 + j] = '0' + i;
+    // }
+    // my_message[40959] = '\0';
+    // LOG(INFO) << "@@@@" << my_message;
+
     while (!brpc::IsAskedToQuit()) {
         // We will receive response synchronously, safe to put variables
         // on stack.
@@ -64,7 +74,8 @@ int main(int argc, char* argv[]) {
         example::EchoResponse response;
         brpc::Controller cntl;
 
-        request.set_message("hello world");
+        request.set_message("hello brpc");
+        // request.set_message(my_message);
 
         cntl.set_log_id(log_id ++);  // set by user
         // Set attachment which is wired to network directly instead of 
@@ -80,6 +91,8 @@ int main(int argc, char* argv[]) {
                 << ": " << response.message() << " (attached="
                 << cntl.response_attachment() << ")"
                 << " latency=" << cntl.latency_us() << "us";
+            
+            LOG(INFO) << "### " << response.message().length();
         } else {
             LOG(WARNING) << cntl.ErrorText();
         }

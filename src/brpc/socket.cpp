@@ -698,6 +698,7 @@ int Socket::ResetFileDescriptor(int fd, size_t bound_gid) {
             LOG(ERROR) << "fail to register at ResetFileDescriptor";
         }
 
+        LOG(WARNING) << "ret_val:" << arg.ret;
         // int result = reinterpret_cast<int*>(ret_val);
         // LOG(INFO) << "bthread 返回结果：" << result;
 
@@ -1344,7 +1345,7 @@ void *Socket::SocketRegister(void *arg) {
   SocketRegisterArg *sock_arg = static_cast<SocketRegisterArg *>(arg);
   Socket *sock = sock_arg->sock;
   SocketUniquePtr s_uptr{sock};
-
+  
   sock->bound_g_ = cur_group;
   sock_arg->ret = cur_group->RegisterSocket(sock);
   LOG(WARNING) << "ret value in SocketRegister:" << sock_arg->ret;
@@ -1355,7 +1356,7 @@ void *Socket::SocketRegister(void *arg) {
 //       // TODO(zkl): return the result to ResetFileDescriptor
 //     return nullptr;
 //   }
-
+    
   
   return nullptr;
 }

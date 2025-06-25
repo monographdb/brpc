@@ -173,12 +173,14 @@ int RingListener::AddRegister(brpc::Socket *sock) {
     io_uring_sqe_set_data64(sqe, data);
     ++submit_cnt_;
     
-    // wait
+    LOG(WARNING) << "AddRegister:start to wait";
     {
         std::unique_lock lk(cqeData.mutex_);
         while(!cqeData.finish_)
-            cqeData.cv_.wait(lk);
+        cqeData.cv_.wait(lk);
     }
+
+    LOG(WARNING) << "AddRegister:finish to wait";
     
     if(cqeData.res_ < 0){
         free_reg_fd_idx_.push_back(fd_idx);
@@ -188,8 +190,8 @@ int RingListener::AddRegister(brpc::Socket *sock) {
         reg_fds_.try_emplace(fd, fd_idx);
         sock->reg_fd_ = fd;
         sock->reg_fd_idx_ = fd_idx;
-        LOG(WARNING) << "success register " << cqeData.res_ \
-            << "socket fd for  " << sock->fd() << "  at " << sock->reg_fd_idx_;
+        LOG(WARNING) << "AddRegister res:" << cqeData.res_ \
+        << ",socket fd:" << sock->fd() << ", reg_fd_idx:" << sock->reg_fd_idx_;
         return 0;
     }
 }
@@ -202,27 +204,29 @@ int RingListener::AddRecv(brpc::Socket *sock) {
              << task_group_->group_id_;
         return -1;
     }
-    int fd_idx = sock->reg_fd_idx_;
-    int sfd = fd_idx >= 0 ? fd_idx : sock->fd();
+
+    int sfd = sock->fd();
+    sqe->flags |= IOSQE_BUFFER_SELECT;
+
+    // if(sock->reg_fd_idx_ >= 0){
+    //     sfd = sock->reg_fd_idx_;
+    //     sqe->flags |= IOSQE_FIXED_FILE;
+    //     LOG(WARNING) << "reg fd idx:" << sfd;
+    // }
+
     io_uring_prep_recv_multishot(sqe, sfd, NULL, 0, 0); // IOSQE_BUFFER_SELEC & MSG_WAITALL
 
     // uint64_t data = reinterpret_cast<uint64_t>(sock) << 16;
     RegisterData cqeData(sock);
     cqeData.res_ = -1;
     uint64_t data = reinterpret_cast<uint64_t>(&cqeData) << 16;
-
-    
     data |= OpCodeToInt(OpCode::Recv);
+
     io_uring_sqe_set_data64(sqe, data);
 
     sqe->buf_group = 0;
-    sqe->flags |= IOSQE_BUFFER_SELECT;
-    if (fd_idx >= 0) {
-        sqe->flags |= IOSQE_FIXED_FILE;
-    }
-    
 
-    LOG(WARNING) << "add multishot for socket " << sfd;
+    LOG(WARNING) << "AddRecv start to wait, sfd:" << sfd << ",reg_idx:" << sock->reg_fd_idx_ << ", fd:" << sock->fd();
 
     ++submit_cnt_;
 
@@ -233,7 +237,7 @@ int RingListener::AddRecv(brpc::Socket *sock) {
             cqeData.cv_.wait(lk);
     }
 
-    LOG(WARNING) << "add recv value:" << cqeData.res_;    
+    LOG(WARNING) << "AddRecv finish wait, res:" << cqeData.res_;    
     return cqeData.res_;
 }
 
@@ -562,15 +566,20 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
             RegisterData* cqeDataPtr = reinterpret_cast<RegisterData *>(data >> 16);
             // brpc::Socket *sock = reinterpret_cast<brpc::Socket *>(data >> 16);
             brpc::Socket *sock = cqeDataPtr->sock_;
-            HandleRecv(sock, cqe);
-            if(cqe->res < 0)
-                LOG(WARNING) << "error at recv, errno:" << cqe->res;
+            if(cqe->res >= 0){
+                HandleRecv(sock, cqe);
+            
+            } else {
+                LOG(WARNING) << "error at recv, errno:" << cqe->res << ", sock fd:" << sock->fd() << ",reg fd:" << sock->reg_fd_;
+            }
             {
+                LOG(WARNING) << "handleCQE:Recv";
                 std::unique_lock lock(cqeDataPtr->mutex_);
                 cqeDataPtr->res_ = cqe->res;
                 cqeDataPtr->finish_ = true;
             }
             cqeDataPtr->cv_.notify_one();
+            
             break;
         }
         case OpCode::CancelRecv: {
@@ -591,6 +600,7 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
         case OpCode::RegisterFile: {
             RegisterData* cqeDataPtr = reinterpret_cast<RegisterData *>(data >> 16);
             {
+                LOG(WARNING) << "handleCQE:RegisterFile";
                 std::unique_lock lock(cqeDataPtr->mutex_);
                 cqeDataPtr->res_ = cqe->res;
                 cqeDataPtr->finish_ = true;
@@ -598,7 +608,7 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
             cqeDataPtr->cv_.notify_one();
 
             // 在这里recv试试
-            LOG(WARNING) << "handle register file";
+            LOG(WARNING) << "HandleCqe_RegisterFile res:" << cqe->res;
 
             
             // brpc::Socket *sock = reinterpret_cast<brpc::Socket *>(data >> 16);
