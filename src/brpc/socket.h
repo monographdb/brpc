@@ -44,6 +44,12 @@
 #ifdef IO_URING_ENABLED
 class RingListener;
 struct InboundRingBuf;
+struct SocketRegisterArg{
+    brpc::Socket *sock_{nullptr};
+    int ret_{-1};
+
+    SocketRegisterArg(brpc::Socket *sock):sock_(sock){}
+};
 #endif
 namespace bthread {
 class TaskGroup;
