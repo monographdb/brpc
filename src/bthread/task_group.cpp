@@ -1308,10 +1308,7 @@ void TaskGroup::NotifyRegisteredModules(WorkerStatus status) {
 #ifdef IO_URING_ENABLED
 int TaskGroup::RegisterSocket(brpc::Socket *sock) {
     ring_listener_->AddRegister(sock);
-
-    LOG(WARNING) << "register finish, then to socket Receive";
     return SocketRecv(sock);
-    // return 0;
 }
 
 int TaskGroup::UnregisterSocket(int fd) {
@@ -1365,6 +1362,7 @@ int TaskGroup::SocketWaitingNonFixedWrite(brpc::Socket *sock) {
 }
 
 int TaskGroup::RingFsync(int fd) {
+    LOG(WARNING) << "start to fsync";
     RingFsyncData args;
     args.fd_ = fd;
 
@@ -1374,6 +1372,12 @@ int TaskGroup::RingFsync(int fd) {
     }
 
     return args.Wait();
+
+    // int res = ring_listener_->AddFsync(fd);
+    // if (res != 0) {
+    //     return -1;
+    // }
+    // return res;
 }
 
 const char *TaskGroup::GetRingReadBuf(uint16_t buf_id) {

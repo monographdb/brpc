@@ -45,8 +45,10 @@
 class RingListener;
 struct InboundRingBuf;
 struct SocketRegisterArg{
-    brpc::Socket *sock;
-    int ret;
+    brpc::Socket *sock_{nullptr};
+    int ret_{-1};
+
+    SocketRegisterArg(brpc::Socket *sock):sock_(sock){}
 };
 #endif
 namespace bthread {

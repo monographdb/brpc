@@ -120,7 +120,8 @@ public:
 
     int AddWaitingNonFixedWrite(brpc::Socket *sock);
 
-    int AddFsync(RingFsyncData *args);
+    int AddFsync(RingFsyncData* arg);
+    int AddFsync(int fd);
 
     bool HasJobsToSubmit() const {
         return submit_cnt_ > 0;
@@ -131,11 +132,9 @@ public:
                    std::memory_order_relaxed);
     }
 
-    // polling 不需要submit
     int SubmitAll();
 
     int Unregister(int fd) {
-        // TODO(zkl): should wait for the cancel cqe?
         return AddRequestCancel(fd);
     }
 
@@ -159,18 +158,34 @@ public:
 
 private:
 
-    // register cqe data
-    struct RegisterData{
+    struct CqeCallBackData{
         brpc::Socket *sock_;
+        io_uring_cqe *cqe_{nullptr};
         bool finish_{false};
-        int res_{-1};
-        bool need_notify_;
+        bool need_notify_{true}; // 避免多次调用CallBack导致死锁
+
         bthread::Mutex mutex_;
         bthread::ConditionVariable cv_;
 
-        RegisterData(brpc::Socket *sock):sock_(sock){}
+        void WaitCallBack(){
+            std::unique_lock lk(mutex_);
+            while(!finish_)
+                cv_.wait(lk);
+        }
+
+        void CallBack(io_uring_cqe *cqe){
+            if(need_notify_){
+                need_notify_ = false;
+                std::unique_lock lock(mutex_);
+                cqe_ = cqe;
+                finish_ = true;
+
+                cv_.notify_one();
+            }
+        }
+
+        CqeCallBackData(brpc::Socket *sock):sock_(sock){}
     };
-    
     
 
     void FreeBuf() {

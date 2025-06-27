@@ -27,6 +27,7 @@
 
 #include "ring_listener.h"
 
+
 RingListener::~RingListener() {
     for (auto [fd, fd_idx]: reg_fds_) {
         AddRequestCancel(fd);
@@ -102,42 +103,7 @@ int RingListener::Init() {
     return 0;
 }
 
-int RingListener::AddRegister(brpc::Socket *sock) {
-    // int fd = sock->fd();
-    // CHECK(fd>=0);
-
-    // auto it = reg_fds_.find(fd);
-    // if (it != reg_fds_.end()) {
-    //     LOG(ERROR) << "Socket " << sock->id() << ", fd: " << sock->fd()
-    //            << " has been registered before.";
-    //     int ret = AddRecv(sock);
-    //     return ret;
-    // }
-
-    // sock->reg_fd_idx_ = -1;
-    // int ret = -1;
-
-    // if (free_reg_fd_idx_.empty()) {
-    //     // All registered file slots have been taken. Cannot register the socket's
-    //     // fd.
-    //     reg_fds_.try_emplace(fd, -1);
-    //     ret = AddRecv(sock);  // 直接return -1 不是更好？ register只干一件事
-    // } else {
-    //     uint16_t fd_idx = free_reg_fd_idx_.back();
-    //     free_reg_fd_idx_.pop_back();
-    //     reg_fds_.try_emplace(fd, fd_idx);
-    //     sock->reg_fd_ = fd;
-    //     sock->reg_fd_idx_ = fd_idx;
-    //     ret = AddFileRegister(sock, &sock->reg_fd_, fd_idx); // 函数里面也在设置sock->reg_fd_idx_ = fd_idx;
-    // }
-
-    // if (ret < 0) {
-    //     reg_fds_.erase(fd);
-    //     return -1;
-    // }
-
-    // return 0;
-  
+int RingListener::AddRegister(brpc::Socket *sock) {  
     int fd = sock->fd();
     CHECK(fd>=0);
 
@@ -146,8 +112,6 @@ int RingListener::AddRegister(brpc::Socket *sock) {
         LOG(ERROR) << "Socket " << sock->id() << ", fd: " << sock->fd()
                << " has been registered before.";
         return 0;
-        // int ret = AddRecv(sock);
-        // return ret;
     }
 
     sock->reg_fd_idx_ = -1;
@@ -155,7 +119,6 @@ int RingListener::AddRegister(brpc::Socket *sock) {
     if (free_reg_fd_idx_.empty())
         return -1;
     
-
     uint16_t fd_idx = free_reg_fd_idx_.back();
     free_reg_fd_idx_.pop_back();
 
@@ -166,26 +129,19 @@ int RingListener::AddRegister(brpc::Socket *sock) {
              << task_group_->group_id_;
         return -1;
     }
-    // registered_fds[fd_idx] = sock->reg_fd_;
-    io_uring_prep_files_update(sqe, &sock->reg_fd_, 1, fd_idx);
+
+    io_uring_prep_files_update(sqe, &fd, 1, fd_idx);
     
-    RegisterData cqeData(sock);
+    CqeCallBackData cqeData(sock);
 
     uint64_t data = reinterpret_cast<uint64_t>(&cqeData) << 16;
     data |= OpCodeToInt(OpCode::RegisterFile);
     io_uring_sqe_set_data64(sqe, data);
     ++submit_cnt_;
-    
-    LOG(WARNING) << "AddRegister:start to wait";
-    {
-        std::unique_lock lk(cqeData.mutex_);
-        while(!cqeData.finish_)
-        cqeData.cv_.wait(lk);
-    }
 
-    LOG(WARNING) << "AddRegister:finish to wait";
+    cqeData.WaitCallBack();
     
-    if(cqeData.res_ < 0){
+    if(cqeData.cqe_->res < 0){
         free_reg_fd_idx_.push_back(fd_idx);
         LOG(WARNING) << "register failed";
         return -1;
@@ -193,12 +149,6 @@ int RingListener::AddRegister(brpc::Socket *sock) {
         reg_fds_.try_emplace(fd, fd_idx);
         sock->reg_fd_ = fd;
         sock->reg_fd_idx_ = fd_idx;
-        LOG(WARNING) << "AddRegister res:" << cqeData.res_ \
-        << ",socket fd:" << sock->fd() << ", reg_fd_idx:" << sock->reg_fd_idx_;
-
-        // ------------------------------------------------------
-        // AddRecv(sock);
-        // ------------------------------------------------------
         return 0;
     }
 }
@@ -218,15 +168,14 @@ int RingListener::AddRecv(brpc::Socket *sock) {
     if(sock->reg_fd_idx_ >= 0){
         sfd = sock->reg_fd_idx_;
         sqe->flags |= IOSQE_FIXED_FILE;
-        LOG(WARNING) << "reg fd idx:" << sfd;
     }
-
 
     io_uring_prep_recv_multishot(sqe, sfd, NULL, 0, 0); 
 
-    RegisterData* cqeDataPtr = new RegisterData(sock);
+    // should use unique_ptr;
+    // std::unique_ptr<CqeCallBackData> cqeDataPtr(new CqeCallBackData(sock));
+    CqeCallBackData* cqeDataPtr = new CqeCallBackData(sock);
     
-    cqeDataPtr->res_ = -1;
     uint64_t data = reinterpret_cast<uint64_t>(cqeDataPtr) << 16;
     data |= OpCodeToInt(OpCode::Recv);
 
@@ -234,19 +183,11 @@ int RingListener::AddRecv(brpc::Socket *sock) {
 
     sqe->buf_group = 0;
 
-    LOG(WARNING) << "AddRecv start to wait, sfd:" << sfd << ",reg_idx:" << sock->reg_fd_idx_ << ", fd:" << sock->fd();
-
     ++submit_cnt_;
 
-    cqeDataPtr->need_notify_ = true; // wait
-    {
-        std::unique_lock lk(cqeDataPtr->mutex_);
-        while(!cqeDataPtr->finish_)
-            cqeDataPtr->cv_.wait(lk);
-    }
+    cqeDataPtr->WaitCallBack();
 
-    LOG(WARNING) << "AddRecv finish wait, res:" << cqeDataPtr->res_;    
-    return cqeDataPtr->res_;
+    return (cqeDataPtr->cqe_->res < 0) ? cqeDataPtr->cqe_->res : 0;
 }
 
 int RingListener::AddFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, uint32_t ring_buf_size) {
@@ -370,6 +311,30 @@ int RingListener::AddFsync(RingFsyncData *args) {
     return 0;
 }
 
+int RingListener::AddFsync(int fd) {
+    io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
+    if (sqe == nullptr) {
+        LOG(ERROR)
+          << "IO uring submission queue is full for the ring listener, group: "
+          << task_group_->group_id_;
+        return -1;
+    }
+
+    io_uring_prep_fsync(sqe, fd, 0);
+    CqeCallBackData cqeData(nullptr);
+
+    uint64_t data = reinterpret_cast<uint64_t>(&cqeData) << 16;
+    data |= OpCodeToInt(OpCode::Fsync);
+    io_uring_sqe_set_data64(sqe, data);
+    ++submit_cnt_;
+
+    // Submit immediately since fsync latency matters.
+    SubmitAll();
+
+    cqeData.WaitCallBack();
+    return cqeData.cqe_->res;
+}
+
 int RingListener::SubmitAll() {
     if (submit_cnt_ == 0) {
         return 0;
@@ -378,6 +343,7 @@ int RingListener::SubmitAll() {
     int ret = io_uring_submit(&ring_);
     if (ret >= 0) {
         submit_cnt_ = submit_cnt_ >= ret ? submit_cnt_ - ret : 0;
+        LOG(WARNING) << "submit " << ret << " events";
     } else {
         // IO uring submission failed. Clears the submission count.
         submit_cnt_ = 0;
@@ -520,28 +486,37 @@ int RingListener::AddRequestCancel(int fd) {
         fd_idx = it->second;
     }
 
-    int sfd;
-    uint64_t data;
-
+    int sfd = fd;
     int flags = 0;
     if (fd_idx >= 0) {
-        flags |= IORING_ASYNC_CANCEL_FD_FIXED;
+        flags |= (IORING_ASYNC_CANCEL_FD_FIXED | IOSQE_FIXED_FILE);
         sfd = fd_idx;
-        data = fd_idx << 16;
-    } else {
-        sfd = fd;
-        data = UINT16_MAX << 16;
     }
 
-    io_uring_prep_cancel_fd(sqe, sfd, flags); // fd 不清楚是否被remove
+    io_uring_prep_cancel_fd(sqe, sfd, flags);
+
+    CqeCallBackData cqeData(nullptr);
+    uint64_t data = reinterpret_cast<uint64_t>(&cqeData) << 16;
     data |= OpCodeToInt(OpCode::CancelRecv);
+
     io_uring_sqe_set_data64(sqe, data);
-    if (fd_idx >= 0) {
-        sqe->cancel_flags |= IOSQE_FIXED_FILE;  // ？？
+    submit_cnt_++;
+
+    cqeData.WaitCallBack();
+    
+    // call back process code 
+    if(cqeData.cqe_->res < 0){
+        LOG(ERROR) << "Failed to cancel socket " << cqeData.sock_->fd() << " recv, errno: " << cqeData.cqe_->res
+                        << ", group: " << task_group_->group_id_;
+        return -1;
     }
 
-    reg_fds_.erase(it);  // 如果不存在，这里可能会出问题
-    submit_cnt_++;
+    // If the fd is a registered file, recycles the fixed file slot.
+    if(fd_idx >= 0){
+        free_reg_fd_idx_.emplace_back(fd_idx);
+        reg_fds_.erase(it);
+    }
+
     return 0;
 }
 
@@ -571,68 +546,23 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
 
     switch (op) {
         case OpCode::Recv: {
-            RegisterData* cqeDataPtr = reinterpret_cast<RegisterData *>(data >> 16);
-            // brpc::Socket *sock = reinterpret_cast<brpc::Socket *>(data >> 16);
-            brpc::Socket *sock = cqeDataPtr->sock_;
+            CqeCallBackData* cqeDataPtr = reinterpret_cast<CqeCallBackData *>(data >> 16);
+            cqeDataPtr->CallBack(cqe);
             if(cqe->res >= 0){
-                HandleRecv(sock, cqe);
-            
+                HandleRecv(cqeDataPtr->sock_, cqe);
             } else {
-                LOG(WARNING) << "error at recv, errno:" << cqe->res << ", sock fd:" << sock->fd() << ",reg fd idx:" << sock->reg_fd_idx_;
+                LOG(WARNING) << "error at recv, errno:" << cqeDataPtr->cqe_->res << ", sock fd:" << cqeDataPtr->sock_->fd() << ",reg fd idx:" << cqeDataPtr->sock_->reg_fd_idx_;
             }
-            if(cqeDataPtr->need_notify_ == true)
-            {
-                cqeDataPtr->need_notify_ = false;
-                LOG(WARNING) << "handleCQE:Recv";
-                std::unique_lock lock(cqeDataPtr->mutex_);
-                cqeDataPtr->res_ = cqe->res;
-                cqeDataPtr->finish_ = true;
-            }
-            cqeDataPtr->cv_.notify_one();
-            
             break;
         }
         case OpCode::CancelRecv: {
-            if (cqe->res < 0) {
-                LOG(ERROR) << "Failed to cancel socket recv, errno: " << cqe->res
-                        << ", group: " << task_group_->group_id_;
-            }
-            data = data >> 16;
-            // If the fd is a registered file, recycles the fixed file slot.
-            if (data < UINT16_MAX) {
-                uint16_t fd_idx = (uint16_t) data;
-                free_reg_fd_idx_.emplace_back(fd_idx);
-            }
-            LOG(WARNING) << "cancel recv";
-
+            CqeCallBackData* cqeDataPtr = reinterpret_cast<CqeCallBackData *>(data >> 16);
+            cqeDataPtr->CallBack(cqe);
             break;
         }
         case OpCode::RegisterFile: {
-            RegisterData* cqeDataPtr = reinterpret_cast<RegisterData *>(data >> 16);
-            {
-                LOG(WARNING) << "handleCQE:RegisterFile";
-                std::unique_lock lock(cqeDataPtr->mutex_);
-                cqeDataPtr->res_ = cqe->res;
-                cqeDataPtr->finish_ = true;
-            }
-            cqeDataPtr->cv_.notify_one();
-
-            // 在这里recv试试
-            LOG(WARNING) << "HandleCqe_RegisterFile res:" << cqe->res;
-
-            // brpc::Socket *sock = reinterpret_cast<brpc::Socket *>(data >> 16);
-            // if (cqe->res < 0) {
-            //     LOG(WARNING) << "IO uring file registration failed, errno: " << cqe->res
-            //             << ", group: " << task_group_->group_id_
-            //             << ", socket: " << *sock;
-            //     free_reg_fd_idx_.emplace_back(sock->reg_fd_idx_);
-            //     sock->reg_fd_idx_ = -1;
-            //     auto it = reg_fds_.find(sock->fd());
-            //     CHECK(it != reg_fds_.end());
-            //     it->second = -1;
-            // }
-            // AddRecv(sock);
-
+            CqeCallBackData* cqeDataPtr = reinterpret_cast<CqeCallBackData *>(data >> 16);
+            cqeDataPtr->CallBack(cqe);
             break;
         }
         case OpCode::FixedWrite:
@@ -647,9 +577,11 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
             break;
         }
         case OpCode::Fsync: {
-            RingFsyncData *fsync_data = reinterpret_cast<RingFsyncData *>(data >> 16);
-            int res = cqe->res;
-            fsync_data->Notify(res);
+            CqeCallBackData* cqeDataPtr = reinterpret_cast<CqeCallBackData *>(data >> 16);
+            cqeDataPtr->CallBack(cqe);
+            // RingFsyncData *fsync_data = reinterpret_cast<RingFsyncData *>(data >> 16);
+            // int res = cqe->res;
+            // fsync_data->Notify(res);
             break;
         }
         default:
@@ -688,7 +620,6 @@ void RingListener::HandleRecv(brpc::Socket *sock, io_uring_cqe *cqe) {
         // it's not possible to return a CQE with a non-zero result and not have a
         // buffer attached.
         if (cqe->flags & IORING_CQE_F_BUFFER) {
-            LOG(WARNING) << "cqe flags:" << cqe->flags;
             buf_id = cqe->flags >> IORING_CQE_BUFFER_SHIFT;
             CHECK(nw > 0);
         }
@@ -700,7 +631,7 @@ void RingListener::HandleRecv(brpc::Socket *sock, io_uring_cqe *cqe) {
         }
     }
 
-    LOG(WARNING) << "get buf " << buf_id;
+    // LOG(WARNING) << "get buf " << buf_id;
 
     InboundRingBuf in_buf{sock, nw, buf_id, need_rearm};
     brpc::Socket::SocketResume(sock, in_buf, task_group_);
