@@ -32,6 +32,7 @@
 #include "bthread/remote_task_queue.h"             // RemoteTaskQueue
 #include "butil/resource_pool.h"                    // ResourceId
 #include "bthread/parking_lot.h"
+#include "brpc/socket.h"
 
 #ifdef IO_URING_ENABLED
 
@@ -229,7 +230,8 @@ public:
     int modules_cnt_{0};
 
 #ifdef IO_URING_ENABLED
-    int RegisterSocket(brpc::Socket *sock);
+    // int RegisterSocket(brpc::Socket *sock);
+    int RegisterSocket(SocketRegisterArg* arg);
     int UnregisterSocket(int fd);
     int SocketRecv(brpc::Socket *sock);
     int SocketFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, uint32_t ring_buf_size);

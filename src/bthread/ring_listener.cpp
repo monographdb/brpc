@@ -103,7 +103,8 @@ int RingListener::Init() {
     return 0;
 }
 
-int RingListener::AddRecv(brpc::Socket *sock) {  
+int RingListener::AddRecv(SocketRegisterArg* arg) {  
+    brpc::Socket *sock = arg->sock_;
     int fd = sock->fd();
     CHECK(fd>=0);
 
@@ -132,25 +133,20 @@ int RingListener::AddRecv(brpc::Socket *sock) {
 
     io_uring_prep_files_update(sqe, &fd, 1, fd_idx);
     
-    CqeCallBackData cqeData(sock);
+    CqeCallBackData* cqeDataPtr = new CqeCallBackData(sock);
+    cqeDataPtr->others = (uint64_t)arg;
 
-    uint64_t data = reinterpret_cast<uint64_t>(&cqeData) << 16;
+    uint64_t data = reinterpret_cast<uint64_t>(cqeDataPtr) << 16;
     data |= OpCodeToInt(OpCode::RegisterFile);
     io_uring_sqe_set_data64(sqe, data);
     ++submit_cnt_;
-    
-    cqeData.WaitCallBack();   
-    
-    if(cqeData.cqe_->res < 0){
-        free_reg_fd_idx_.push_back(fd_idx);
-        LOG(WARNING) << "register socket failed";
-    } else {
-        reg_fds_.try_emplace(fd, fd_idx);
-        sock->reg_fd_ = fd;
-        sock->reg_fd_idx_ = fd_idx;
-    }
 
-    return AddMultishot(sock);
+    // assume it can success
+    sock->reg_fd_ = fd;
+    sock->reg_fd_idx_ = fd_idx;
+    reg_fds_.try_emplace(fd, fd_idx);
+
+    return 0;
 }
 
 int RingListener::AddMultishot(brpc::Socket *sock) {
@@ -565,7 +561,18 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
         }
         case OpCode::RegisterFile: {
             CqeCallBackData* cqeDataPtr = reinterpret_cast<CqeCallBackData *>(data >> 16);
-            cqeDataPtr->CallBack(cqe);
+            brpc::Socket * sock = cqeDataPtr->sock_;
+
+            if(cqe->res < 0){
+                free_reg_fd_idx_.push_back(sock->reg_fd_idx_);
+                sock->reg_fd_ = -1;
+                sock->reg_fd_idx_ = -1;
+                reg_fds_.erase(sock->fd());
+            } 
+            int ret = AddMultishot(sock);
+            SocketRegisterArg* argPtr = reinterpret_cast<SocketRegisterArg *>(cqeDataPtr->others);
+            argPtr->CallBack(ret);
+            delete cqeDataPtr;
             break;
         }
         case OpCode::FixedWrite:

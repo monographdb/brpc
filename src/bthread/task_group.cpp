@@ -1306,10 +1306,8 @@ void TaskGroup::NotifyRegisteredModules(WorkerStatus status) {
 }
 
 #ifdef IO_URING_ENABLED
-int TaskGroup::RegisterSocket(brpc::Socket *sock) {
-    // 可能需要改一下
-    ring_listener_->AddRecv(sock);
-
+int TaskGroup::RegisterSocket(SocketRegisterArg* arg) {
+    ring_listener_->AddRecv(arg);
     return 0;
 }
 

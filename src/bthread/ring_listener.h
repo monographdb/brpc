@@ -110,7 +110,8 @@ public:
 
 
     // 注册socket fd
-    int AddRecv(brpc::Socket *sock);
+    // int AddRecv(brpc::Socket *sock);
+    int AddRecv(SocketRegisterArg* arg);
 
     int AddMultishot(brpc::Socket *sock);
 
@@ -163,7 +164,7 @@ private:
         io_uring_cqe *cqe_{nullptr};
         bool finish_{false};
         bool need_notify_{true}; // only notify once
-        int others;
+        uint64_t others;
 
         bthread::Mutex mutex_;
         bthread::ConditionVariable cv_;

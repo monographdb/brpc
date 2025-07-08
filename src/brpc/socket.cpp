@@ -686,9 +686,11 @@ int Socket::ResetFileDescriptor(int fd, size_t bound_gid) {
 
         SocketRegisterArg arg(this);
 
+        
+        LOG(INFO) << "launch a bthread for SocketRegister";
         bthread_start_from_bound_group(bound_gid, &b_tid, &attr, SocketRegister, &arg);
-        void* ret_val = nullptr;
-        bthread_join(b_tid, &ret_val);
+        LOG(INFO) << "start waiting callback";
+        arg.WaitCallBack();
 
         if(arg.ret_ < 0){
             LOG(ERROR) << "fail to register at ResetFileDescriptor";
@@ -1336,11 +1338,17 @@ void *Socket::SocketRegister(void *arg) {
 
 //   Socket *sock = static_cast<Socket *>(arg);
   SocketRegisterArg *sock_arg = static_cast<SocketRegisterArg *>(arg);
+  if(sock_arg == nullptr){
+    LOG(ERROR) << "error, can not convert in Socket::SocketRegister";
+  };
   Socket *sock = sock_arg->sock_;
-  SocketUniquePtr s_uptr{sock};
-  
   sock->bound_g_ = cur_group;
-  sock_arg->ret_ = cur_group->RegisterSocket(sock);
+
+//   SocketUniquePtr s_uptr{sock};
+  
+//   sock_arg->ret_ = cur_group->RegisterSocket(sock);
+
+    cur_group->RegisterSocket(sock_arg);
 
   return nullptr;
 }
