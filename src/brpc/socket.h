@@ -641,6 +641,30 @@ public:
     void NotifyWaitingNonFixedWrite(int nw);
     int CopyDataRead();
     void ClearInboundBuf();
+
+    // struct SocketRegisterData {
+    //     SocketRegisterData(Socket *socket) : socket_(socket) {}
+    //     Socket *socket_;
+    //     bthread::Mutex mutex_;
+    //     bthread::ConditionVariable cv_;
+    //     bool finish_{false};
+    //     bool success_{false};
+    //
+    //     bool Wait() {
+    //         std::unique_lock lk(mutex_);
+    //         while (!finish_) {
+    //             cv_.wait(lk);
+    //         }
+    //         return success_;
+    //     }
+    //
+    //     void Notify(bool success) {
+    //         std::unique_lock lk(mutex_);
+    //         finish_ = true;
+    //         success_ = success;
+    //         cv_.notify_one();
+    //     }
+    // };
 #endif
 private:
     DISALLOW_COPY_AND_ASSIGN(Socket);
@@ -719,6 +743,7 @@ friend void DereferenceSocket(Socket*);
 #ifdef IO_URING_ENABLED
     static void *SocketProcess(void *);
     static void *SocketRegister(void *);
+    static void *SocketRegisterNew(void *);
     static void *SocketUnRegister(void *);
 #endif
 

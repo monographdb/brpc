@@ -64,6 +64,33 @@ struct RingFsyncData {
     }
 };
 
+struct SocketRegisterArg {
+    int fd_;
+    brpc::Socket *sock_;
+    bthread::Mutex mutex_;
+    bthread::ConditionVariable cv_;
+    bool finish_{false};
+    bool success_{false};
+
+    bool Wait() {
+        LOG(INFO) << "SocketRegisterArg waiting...";
+        std::unique_lock lk(mutex_);
+        while (!finish_) {
+            cv_.wait(lk);
+        }
+        LOG(INFO) << "SocketRegisterArg wait finishes...";
+        return success_;
+    }
+
+    void Notify(bool success) {
+        LOG(INFO) << "SocketRegisterArg Notify: " << success;
+        std::unique_lock lk(mutex_);
+        finish_ = true;
+        success_ = success;
+        cv_.notify_one();
+    }
+};
+
 struct SocketUnRegisterArg {
     int fd_;
     bthread::Mutex mutex_;
@@ -109,6 +136,7 @@ public:
     }
 
     int Register(brpc::Socket *sock);
+    int RegisterNew(SocketRegisterArg *sock);
 
     int SubmitRecv(brpc::Socket *sock);
 
@@ -164,6 +192,7 @@ private:
     int SubmitCancel(int fd);
 
     int SubmitRegisterFile(brpc::Socket *sock, int *fd, int32_t fd_idx);
+    int SubmitRegisterFileNew(SocketRegisterArg *arg, int *fd, int32_t fd_idx);
 
     void HandleCqe(io_uring_cqe *cqe);
 
@@ -178,6 +207,7 @@ private:
         NonFixedWriteFinish,
         WaitingNonFixedWrite,
         Fsync,
+        RegisterFileNew,
         Noop = 255
     };
 
@@ -201,6 +231,8 @@ private:
                 return 7;
             case OpCode::Fsync:
                 return 8;
+            case OpCode::RegisterFileNew:
+                return 9;
             default:
                 return UINT8_MAX;
         }
@@ -226,6 +258,8 @@ private:
                 return OpCode::WaitingNonFixedWrite;
             case 8:
                 return OpCode::Fsync;
+            case 9:
+                return OpCode::RegisterFileNew;
             default:
                 return OpCode::Noop;
         }

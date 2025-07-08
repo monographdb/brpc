@@ -1310,6 +1310,10 @@ int TaskGroup::RegisterSocket(brpc::Socket *sock) {
     return ring_listener_->Register(sock);
 }
 
+int TaskGroup::RegisterSocketNew(SocketRegisterArg *arg) {
+    return ring_listener_->RegisterNew(arg);
+}
+
 int TaskGroup::UnregisterSocket(int fd) {
     return ring_listener_->Unregister(fd);
 }

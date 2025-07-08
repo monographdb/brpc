@@ -137,6 +137,49 @@ int RingListener::Register(brpc::Socket *sock) {
     return 0;
 }
 
+int RingListener::RegisterNew(SocketRegisterArg *arg) {
+    brpc::Socket *sock = arg->sock_;
+    int fd = sock->fd();
+    CHECK(fd>=0);
+
+    LOG(INFO) << "RingListener::RegisterNew: " << *sock;
+    auto it = reg_fds_.find(fd);
+    if (it != reg_fds_.end()) {
+        LOG(ERROR) << "Socket " << sock->id() << ", fd: " << sock->fd()
+               << " has been registered before.";
+        int ret = SubmitRecv(sock);
+        return ret;
+    }
+
+    sock->reg_fd_idx_ = -1;
+    int ret = -1;
+
+    if (free_reg_fd_idx_.empty()) {
+        // All registered file slots have been taken. Cannot register the socket's
+        // fd.
+        reg_fds_.try_emplace(fd, -1);
+        // TODO(zkl): Submit the receive sqe and return result.
+        ret = SubmitRecv(sock);
+        arg->Notify(true);
+    } else {
+        uint16_t fd_idx = free_reg_fd_idx_.back();
+        free_reg_fd_idx_.pop_back();
+        reg_fds_.try_emplace(fd, fd_idx);
+        sock->reg_fd_ = fd;
+        sock->reg_fd_idx_ = fd_idx;
+        // The caller will be notified when the socket is submitted to io_uring.
+        ret = SubmitRegisterFileNew(arg, &sock->reg_fd_, fd_idx);
+    }
+
+    if (ret < 0) {
+        reg_fds_.erase(fd);
+        return -1;
+    }
+
+    return 0;
+}
+
+
 int RingListener::SubmitRecv(brpc::Socket *sock) {
     io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
     if (sqe == nullptr) {
@@ -145,6 +188,7 @@ int RingListener::SubmitRecv(brpc::Socket *sock) {
              << task_group_->group_id_;
         return -1;
     }
+    LOG(INFO) << "SubmitRecv: " << *sock;
     int fd_idx = sock->reg_fd_idx_;
     int sfd = fd_idx >= 0 ? fd_idx : sock->fd();
     io_uring_prep_recv_multishot(sqe, sfd, NULL, 0, 0);
@@ -161,6 +205,7 @@ int RingListener::SubmitRecv(brpc::Socket *sock) {
     // sqe->ioprio |= IORING_RECVSEND_BUNDLE;
 
     ++submit_cnt_;
+    // TODO(zkl): Submit the receive sqe and return result.
     return 0;
 }
 
@@ -476,6 +521,29 @@ int RingListener::SubmitRegisterFile(brpc::Socket *sock, int *fd, int32_t fd_idx
     return 0;
 }
 
+int RingListener::SubmitRegisterFileNew(SocketRegisterArg *arg, int *fd, int32_t fd_idx) {
+    brpc::Socket *sock = arg->sock_;
+
+    io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
+    if (sqe == nullptr) {
+        LOG(ERROR) << "IO uring submission queue is full for the inbound "
+                "listener, group: "
+             << task_group_->group_id_;
+        return -1;
+    }
+
+    io_uring_prep_files_update(sqe, fd, 1, fd_idx);
+    uint64_t data = reinterpret_cast<uint64_t>(arg);
+    data = data << 16;
+    data |= OpCodeToInt(OpCode::RegisterFileNew);
+    io_uring_sqe_set_data64(sqe, data);
+    sock->reg_fd_idx_ = fd_idx;
+
+    ++submit_cnt_;
+    return 0;
+}
+
+
 void RingListener::HandleCqe(io_uring_cqe *cqe) {
     uint64_t data = io_uring_cqe_get_data64(cqe);
     OpCode op = IntToOpCode(data & UINT8_MAX);
@@ -511,7 +579,27 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
                 CHECK(it != reg_fds_.end());
                 it->second = -1;
             }
+            // TODO(zkl): remove reg_fd if SubmitRecv fails?
             SubmitRecv(sock);
+            break;
+        }
+        case OpCode::RegisterFileNew: {
+            SocketRegisterArg *arg = reinterpret_cast<SocketRegisterArg *>(data >> 16);
+            brpc::Socket *sock = arg->sock_;
+            if (cqe->res < 0) {
+                LOG(WARNING) << "IO uring file registration failed, errno: " << cqe->res
+                        << ", group: " << task_group_->group_id_
+                        << ", socket: " << *sock;
+                free_reg_fd_idx_.emplace_back(sock->reg_fd_idx_);
+                sock->reg_fd_idx_ = -1;
+                auto it = reg_fds_.find(sock->fd());
+                CHECK(it != reg_fds_.end());
+                it->second = -1;
+            }
+            // TODO(zkl): remove reg_fd if SubmitRecv fails?
+            int ret = SubmitRecv(sock);
+            // TODO(zkl): Submit the receive sqe and return result.
+            arg->Notify(true);
             break;
         }
         case OpCode::FixedWrite:

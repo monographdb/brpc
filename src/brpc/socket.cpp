@@ -685,8 +685,20 @@ int Socket::ResetFileDescriptor(int fd, size_t bound_gid) {
         attr.keytable_pool = _keytable_pool;
           // TODO(zkl): handle SocketRegister error return -1
           //  should wait for the recv cqe here?
-        bthread_start_from_bound_group(bound_gid, &tid, &attr, SocketRegister,
-                                       this);
+        // bthread_start_from_bound_group(bound_gid, &tid, &attr, SocketRegister,
+        //                                this);
+          // SocketRegisterData args(this);
+          SocketRegisterArg args;
+          args.sock_ = this;
+          bthread_start_from_bound_group(bound_gid, &tid, &attr, SocketRegisterNew,
+                                                 &args);
+          args.Wait();
+          if (!args.success_) {
+              PLOG(ERROR) << "Fail to add SocketId=" << id()
+                      << " into IOURING";
+              _fd.store(-1, butil::memory_order_release);
+              return -1;
+          }
       } else {
 #endif
         if (GetGlobalEventDispatcher(fd).AddConsumer(id(), fd) != 0) {
@@ -1192,6 +1204,7 @@ int Socket::Status(SocketId id, int32_t* nref) {
     return -1;
 }
 
+// TODO(zkl): will OnRecycle be called when Socket::Create fails?
 void Socket::OnRecycle() {
     const bool create_by_connect = CreatedByConnect();
     if (_app_connect) {
@@ -1335,6 +1348,31 @@ void *Socket::SocketRegister(void *arg) {
 
   sock->bound_g_ = cur_group;
   return nullptr;
+}
+
+void *Socket::SocketRegisterNew(void *arg) {
+    bthread::TaskGroup *cur_group = bthread::TaskGroup::VolatileTLSTaskGroup();
+
+    // SocketRegisterData *data = static_cast<SocketRegisterData *>(arg);
+    SocketRegisterArg *data = static_cast<SocketRegisterArg *>(arg);
+    LOG(INFO) << "Socket::SocketRegisterNew: " << *data->sock_;
+
+    Socket *sock = data->sock_;
+    SocketUniquePtr s_uptr{sock};
+
+    int reg_ret = cur_group->RegisterSocketNew(data);
+    if (reg_ret < 0) {
+        data->Notify(false);
+        LOG(ERROR) << "Failed to register the socket " << sock->id()
+                   << " to the IO uring listener.";
+        // TODO(zkl): return the result to ResetFileDescriptor
+        return nullptr;
+    }
+
+    // The caller will be notified when the socket is submitted to io_uring.
+    // TODO(zkl): reset this if submit recv fails
+    sock->bound_g_ = cur_group;
+    return nullptr;
 }
 
 void *Socket::SocketUnRegister(void *arg) {
