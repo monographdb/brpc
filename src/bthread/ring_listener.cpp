@@ -133,10 +133,10 @@ int RingListener::AddRecv(SocketRegisterArg* arg) {
 
     io_uring_prep_files_update(sqe, &fd, 1, fd_idx);
     
-    CqeCallBackData* cqeDataPtr = new CqeCallBackData(sock);
-    cqeDataPtr->others = (uint64_t)arg;
+    // CqeCallBackData* cqeDataPtr = new CqeCallBackData(sock);
+    // cqeDataPtr->others = (uint64_t)arg;
 
-    uint64_t data = reinterpret_cast<uint64_t>(cqeDataPtr) << 16;
+    uint64_t data = reinterpret_cast<uint64_t>(arg) << 16;
     data |= OpCodeToInt(OpCode::RegisterFile);
     io_uring_sqe_set_data64(sqe, data);
     ++submit_cnt_;
@@ -147,6 +147,8 @@ int RingListener::AddRecv(SocketRegisterArg* arg) {
     reg_fds_.try_emplace(fd, fd_idx);
 
     return 0;
+    
+
 }
 
 int RingListener::AddMultishot(brpc::Socket *sock) {
@@ -560,8 +562,8 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
             break;
         }
         case OpCode::RegisterFile: {
-            CqeCallBackData* cqeDataPtr = reinterpret_cast<CqeCallBackData *>(data >> 16);
-            brpc::Socket * sock = cqeDataPtr->sock_;
+            SocketRegisterArg* sock_arg = reinterpret_cast<SocketRegisterArg *>(data >> 16);
+            brpc::Socket * sock = sock_arg->sock_;
 
             if(cqe->res < 0){
                 free_reg_fd_idx_.push_back(sock->reg_fd_idx_);
@@ -569,10 +571,7 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
                 sock->reg_fd_idx_ = -1;
                 reg_fds_.erase(sock->fd());
             } 
-            int ret = AddMultishot(sock);
-            SocketRegisterArg* argPtr = reinterpret_cast<SocketRegisterArg *>(cqeDataPtr->others);
-            argPtr->CallBack(ret);
-            delete cqeDataPtr;
+            sock_arg->CallBack(AddMultishot(sock));
             break;
         }
         case OpCode::FixedWrite:

@@ -109,7 +109,6 @@ public:
     }
 
 
-    // 注册socket fd
     // int AddRecv(brpc::Socket *sock);
     int AddRecv(SocketRegisterArg* arg);
 
