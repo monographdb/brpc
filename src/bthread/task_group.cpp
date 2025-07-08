@@ -1307,8 +1307,10 @@ void TaskGroup::NotifyRegisteredModules(WorkerStatus status) {
 
 #ifdef IO_URING_ENABLED
 int TaskGroup::RegisterSocket(brpc::Socket *sock) {
-    ring_listener_->AddRegister(sock);
-    return SocketRecv(sock);
+    // 可能需要改一下
+    ring_listener_->AddRecv(sock);
+
+    return 0;
 }
 
 int TaskGroup::UnregisterSocket(int fd) {
@@ -1316,7 +1318,7 @@ int TaskGroup::UnregisterSocket(int fd) {
 }
 
 int TaskGroup::SocketRecv(brpc::Socket *sock) {
-    return ring_listener_->AddRecv(sock);
+    return ring_listener_->AddMultishot(sock);
 }
 
 int TaskGroup::SocketFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, uint32_t ring_buf_size) {

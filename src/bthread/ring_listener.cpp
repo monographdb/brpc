@@ -103,7 +103,7 @@ int RingListener::Init() {
     return 0;
 }
 
-int RingListener::AddRegister(brpc::Socket *sock) {  
+int RingListener::AddRecv(brpc::Socket *sock) {  
     int fd = sock->fd();
     CHECK(fd>=0);
 
@@ -138,22 +138,22 @@ int RingListener::AddRegister(brpc::Socket *sock) {
     data |= OpCodeToInt(OpCode::RegisterFile);
     io_uring_sqe_set_data64(sqe, data);
     ++submit_cnt_;
-
-    cqeData.WaitCallBack();
+    
+    cqeData.WaitCallBack();   
     
     if(cqeData.cqe_->res < 0){
         free_reg_fd_idx_.push_back(fd_idx);
-        LOG(WARNING) << "register failed";
-        return -1;
+        LOG(WARNING) << "register socket failed";
     } else {
         reg_fds_.try_emplace(fd, fd_idx);
         sock->reg_fd_ = fd;
         sock->reg_fd_idx_ = fd_idx;
-        return 0;
     }
+
+    return AddMultishot(sock);
 }
 
-int RingListener::AddRecv(brpc::Socket *sock) {
+int RingListener::AddMultishot(brpc::Socket *sock) {
     io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
     if (sqe == nullptr) {
         LOG(ERROR) << "IO uring submission queue is full for the inbound "
@@ -185,9 +185,13 @@ int RingListener::AddRecv(brpc::Socket *sock) {
 
     ++submit_cnt_;
 
-    cqeDataPtr->WaitCallBack();
+    // repeat submit until all sqes have entered the ring
+    while(SubmitAll() != 0)
+        ;
 
-    return (cqeDataPtr->cqe_->res < 0) ? cqeDataPtr->cqe_->res : 0;
+    return 0;
+
+    // return (cqeDataPtr->cqe_->res < 0) ? cqeDataPtr->cqe_->res : 0;
 }
 
 int RingListener::AddFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, uint32_t ring_buf_size) {
@@ -496,27 +500,16 @@ int RingListener::AddRequestCancel(int fd) {
     io_uring_prep_cancel_fd(sqe, sfd, flags);
 
     CqeCallBackData cqeData(nullptr);
+    cqeData.others = fd;
     uint64_t data = reinterpret_cast<uint64_t>(&cqeData) << 16;
     data |= OpCodeToInt(OpCode::CancelRecv);
 
     io_uring_sqe_set_data64(sqe, data);
     submit_cnt_++;
 
-    cqeData.WaitCallBack();
+    while(SubmitAll() != 0)
+        ;
     
-    // call back process code 
-    if(cqeData.cqe_->res < 0){
-        LOG(ERROR) << "Failed to cancel socket " << cqeData.sock_->fd() << " recv, errno: " << cqeData.cqe_->res
-                        << ", group: " << task_group_->group_id_;
-        return -1;
-    }
-
-    // If the fd is a registered file, recycles the fixed file slot.
-    if(fd_idx >= 0){
-        free_reg_fd_idx_.emplace_back(fd_idx);
-        reg_fds_.erase(it);
-    }
-
     return 0;
 }
 
@@ -547,7 +540,6 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
     switch (op) {
         case OpCode::Recv: {
             CqeCallBackData* cqeDataPtr = reinterpret_cast<CqeCallBackData *>(data >> 16);
-            cqeDataPtr->CallBack(cqe);
             if(cqe->res >= 0){
                 HandleRecv(cqeDataPtr->sock_, cqe);
             } else {
@@ -557,7 +549,18 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
         }
         case OpCode::CancelRecv: {
             CqeCallBackData* cqeDataPtr = reinterpret_cast<CqeCallBackData *>(data >> 16);
-            cqeDataPtr->CallBack(cqe);
+            int fd = cqeDataPtr->others;
+
+            if(cqe->res < 0){
+                LOG(ERROR) << "Fail to cancel socket, attempt to cancel again";
+                AddRequestCancel(fd);
+            } else {
+                auto it = reg_fds_.find(fd);
+                if(it != reg_fds_.end()){
+                    reg_fds_.erase(it);
+                    free_reg_fd_idx_.emplace_back(it->second);
+                }
+            }
             break;
         }
         case OpCode::RegisterFile: {
@@ -647,7 +650,7 @@ void RingListener::HandleBacklog() {
             OpCode op = IntToOpCode(data & UINT8_MAX);
             switch (op) {
                 case OpCode::Recv:
-                    AddRecv(sock);
+                    AddMultishot(sock);
                     break;
                 case OpCode::FixedWriteFinish:
                 case OpCode::NonFixedWriteFinish: {

@@ -108,11 +108,11 @@ public:
         }
     }
 
+
     // 注册socket fd
-    int AddRegister(brpc::Socket *sock);
-    
-    // 把之前调用过 Register(socket) 的读数据任务添加到ring 中管理
     int AddRecv(brpc::Socket *sock);
+
+    int AddMultishot(brpc::Socket *sock);
 
     int AddFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, uint32_t ring_buf_size);
 
@@ -162,10 +162,12 @@ private:
         brpc::Socket *sock_;
         io_uring_cqe *cqe_{nullptr};
         bool finish_{false};
-        bool need_notify_{true}; // 避免多次调用CallBack导致死锁
+        bool need_notify_{true}; // only notify once
+        int others;
 
         bthread::Mutex mutex_;
         bthread::ConditionVariable cv_;
+
 
         void WaitCallBack(){
             std::unique_lock lk(mutex_);
