@@ -112,13 +112,18 @@ int RingListener::AddRecv(SocketRegisterArg* arg) {
     if (it != reg_fds_.end()) {
         LOG(ERROR) << "Socket " << sock->id() << ", fd: " << sock->fd()
                << " has been registered before.";
+        
+        arg->CallBack(AddMultishot(sock));
+        
         return 0;
     }
 
     sock->reg_fd_idx_ = -1;
 
-    if (free_reg_fd_idx_.empty())
+    if (free_reg_fd_idx_.empty()){
+        arg->CallBack(AddMultishot(sock));
         return -1;
+    }
     
     uint16_t fd_idx = free_reg_fd_idx_.back();
     free_reg_fd_idx_.pop_back();
@@ -128,6 +133,7 @@ int RingListener::AddRecv(SocketRegisterArg* arg) {
         LOG(ERROR) << "IO uring submission queue is full for the inbound "
                 "listener, group: "
              << task_group_->group_id_;
+        arg->CallBack(AddMultishot(sock));
         return -1;
     }
 
@@ -147,8 +153,6 @@ int RingListener::AddRecv(SocketRegisterArg* arg) {
     reg_fds_.try_emplace(fd, fd_idx);
 
     return 0;
-    
-
 }
 
 int RingListener::AddMultishot(brpc::Socket *sock) {
