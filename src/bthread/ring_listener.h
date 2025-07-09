@@ -93,20 +93,27 @@ struct SocketRegisterData {
 
 struct SocketUnRegisterData {
     int fd_;
+    int32_t fd_idx_;
     bthread::Mutex mutex_;
     bthread::ConditionVariable cv_;
     bool finish_{false};
     int res_{-1};
 
     int Wait() {
+        LOG(INFO) << "SocketUnRegisterArg waiting..." << this;
+
         std::unique_lock lk(mutex_);
         while (!finish_) {
             cv_.wait(lk);
         }
+        LOG(INFO) << "SocketUnRegisterArg wait finishes..." << this;
+
         return res_;
     }
 
     void Notify(int res) {
+        LOG(INFO) << "SocketUnRegisterArg Notify: " << res << " " << this;
+
         std::unique_lock lk(mutex_);
         finish_ = true;
         res_ = res;
@@ -137,6 +144,10 @@ public:
 
     int Register(SocketRegisterData *data);
 
+    int Unregister(SocketUnRegisterData *data) {
+        return SubmitCancel(data);
+    }
+
     int SubmitRecv(brpc::Socket *sock);
 
     int SubmitFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, uint32_t ring_buf_size);
@@ -157,11 +168,6 @@ public:
     }
 
     int SubmitAll();
-
-    int Unregister(int fd) {
-        // TODO(zkl): should wait for the cancel cqe?
-        return SubmitCancel(fd);
-    }
 
     void PollAndNotify();
 
@@ -188,9 +194,8 @@ private:
         }
     }
 
-    int SubmitCancel(int fd);
-
     int SubmitRegisterFile(SocketRegisterData *register_data, int *fd, int32_t fd_idx);
+    int SubmitCancel(SocketUnRegisterData *unregister_data);
 
     void HandleCqe(io_uring_cqe *cqe);
 

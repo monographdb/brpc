@@ -1199,7 +1199,6 @@ int Socket::Status(SocketId id, int32_t* nref) {
     return -1;
 }
 
-// TODO(zkl): will OnRecycle be called when Socket::Create fails?
 void Socket::OnRecycle() {
     const bool create_by_connect = CreatedByConnect();
     if (_app_connect) {
@@ -1226,28 +1225,29 @@ void Socket::OnRecycle() {
         if (_on_edge_triggered_events != NULL) {
 #ifdef IO_URING_ENABLED
             if (FLAGS_use_io_uring && bound_g_ != nullptr) {
+                SocketUnRegisterData args;
+                args.fd_ = prev_fd;
                 bthread::TaskGroup *cur_group = bthread::tls_task_group;
                 if (cur_group == bound_g_) {
-                    int res = bound_g_->UnregisterSocket(prev_fd);
-                    if (res != 0) {
-                        LOG(ERROR) << "SocketUnRegister failed: " << res;
+                    int res = bound_g_->UnregisterSocket(&args);
+                    if (res < 0) {
+                        LOG(ERROR) << "Calling UnregisterSocket failed: " << res;
+                        args.Notify(-1);
                     }
                 } else {
                     // This thread is not the socket's bound_g_, start a bound bthread.
                     bthread_attr_t attr = BTHREAD_ATTR_NORMAL;
                     bthread_t tid;
-                    SocketUnRegisterData args;
-                    args.fd_ = prev_fd;
                     void *args_ptr = &args;
                     if (bthread_start_from_bound_group(
                         bound_g_->group_id_, &tid, &attr, SocketUnRegister, args_ptr) != 0) {
                         LOG(FATAL) << "Fail to start SocketUnRegister";
                         SocketUnRegister(args_ptr);
                     }
-                    int res = args.Wait();
-                    if (res != 0) {
-                        LOG(ERROR) << "SocketUnRegister failed: " << res;
-                    }
+                }
+                int res = args.Wait();
+                if (res < 0) {
+                    LOG(ERROR) << "SocketUnRegister failed: " << res;
                 }
                 bound_g_ = nullptr;
                 reg_fd_idx_ = -1;
@@ -1354,10 +1354,19 @@ void *Socket::SocketRegister(void *arg) {
 
 void *Socket::SocketUnRegister(void *arg) {
     bthread::TaskGroup *cur_group = bthread::tls_task_group;
-    SocketUnRegisterData *args = static_cast<SocketUnRegisterData *>(arg);
-    // TODO(zkl): should wait the cancel cqe and return the result to caller?
-    int res = cur_group->UnregisterSocket(args->fd_);
-    args->Notify(res);
+    SocketUnRegisterData *data = static_cast<SocketUnRegisterData *>(arg);
+    int res = cur_group->UnregisterSocket(data);
+    if (res < 0) {
+        data->Notify(res);
+    }
+    // The caller will be notified when cancel cqe is handled.
+    return nullptr;
+}
+
+void *Socket::SocketRecycle(void *arg) {
+    Socket *sock = static_cast<Socket *>(arg);
+    sock->OnRecycle();
+    butil::return_resource(SlotOfSocketId(sock->_this_id));
     return nullptr;
 }
 
@@ -3435,6 +3444,23 @@ void Socket::ClearInboundBuf() {
     }
     in_bufs_.clear();
     buf_idx_ = 0;
+}
+
+bool Socket::RecycleInBackgroundIfNecessary() {
+    bthread::TaskGroup *g = bthread::tls_task_group;
+    if (FLAGS_use_io_uring && g != nullptr && g->is_current_pthread_task() && bound_g_ != nullptr) {
+        bthread_t tid;
+        bthread_attr_t attr;
+        attr = BTHREAD_ATTR_NORMAL;
+        attr.keytable_pool = _keytable_pool;
+        if (bthread_start_from_bound_group(bound_g_->group_id_, &tid, &attr, SocketRecycle, this) != 0) {
+            LOG(FATAL) << "Fail to start SocketProcess";
+            SocketRecycle(this);
+        }
+        LOG(INFO) << "RecycleInBackground sock: " << *this;
+        return true;
+    }
+    return false;
 }
 #endif
 

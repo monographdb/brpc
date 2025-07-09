@@ -43,6 +43,7 @@ class Socket;
 struct SocketInboundBuf;
 }
 struct SocketRegisterData;
+struct SocketUnRegisterData;
 #endif
 
 namespace bthread {
@@ -231,7 +232,7 @@ public:
 
 #ifdef IO_URING_ENABLED
     int RegisterSocket(SocketRegisterData *data);
-    int UnregisterSocket(int fd);
+    int UnregisterSocket(SocketUnRegisterData *data);
     void SocketRecv(brpc::Socket *sock);
     int SocketFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, uint32_t ring_buf_size);
     int SocketNonFixedWrite(brpc::Socket *sock);

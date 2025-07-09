@@ -29,7 +29,10 @@
 
 RingListener::~RingListener() {
     for (auto [fd, fd_idx]: reg_fds_) {
-        SubmitCancel(fd);
+        SocketUnRegisterData data;
+        data.fd_ = fd;
+        SubmitCancel(&data);
+        // Should wait here? The worker probably has quit already.
     }
     SubmitAll();
 
@@ -437,48 +440,6 @@ void RingListener::RecycleWriteBuf(uint16_t buf_idx) {
     }
 }
 
-int RingListener::SubmitCancel(int fd) {
-    io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
-    if (sqe == nullptr) {
-        LOG(ERROR) << "IO uring submission queue is full for the inbound "
-                "listener, group: "
-             << task_group_->group_id_;
-        return -1;
-    }
-
-    int fd_idx = -1;
-    auto it = reg_fds_.find(fd);
-    if (it == reg_fds_.end()) {
-        LOG(WARNING) << "Canceling an unregistered fd: " << fd;
-    } else {
-        fd_idx = it->second;
-    }
-
-    int sfd;
-    uint64_t data;
-
-    int flags = 0;
-    if (fd_idx >= 0) {
-        flags |= IORING_ASYNC_CANCEL_FD_FIXED;
-        sfd = fd_idx;
-        data = fd_idx << 16;
-    } else {
-        sfd = fd;
-        data = UINT16_MAX << 16;
-    }
-
-    io_uring_prep_cancel_fd(sqe, sfd, flags);
-    data |= OpCodeToInt(OpCode::CancelRecv);
-    io_uring_sqe_set_data64(sqe, data);
-    if (fd_idx >= 0) {
-        sqe->cancel_flags |= IOSQE_FIXED_FILE;
-    }
-
-    reg_fds_.erase(it);
-    submit_cnt_++;
-    return 0;
-}
-
 int RingListener::SubmitRegisterFile(SocketRegisterData *register_data, int *fd, int32_t fd_idx) {
     brpc::Socket *sock = register_data->sock_;
 
@@ -501,6 +462,49 @@ int RingListener::SubmitRegisterFile(SocketRegisterData *register_data, int *fd,
     return 0;
 }
 
+int RingListener::SubmitCancel(SocketUnRegisterData *unregister_data) {
+    int fd = unregister_data->fd_;
+    io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
+    if (sqe == nullptr) {
+        LOG(ERROR) << "IO uring submission queue is full for the inbound "
+                "listener, group: "
+             << task_group_->group_id_;
+        return -1;
+    }
+
+    int fd_idx = -1;
+    auto it = reg_fds_.find(fd);
+    if (it == reg_fds_.end()) {
+        LOG(WARNING) << "Canceling an unregistered fd: " << fd;
+    } else {
+        fd_idx = it->second;
+    }
+
+    int sfd;
+    uint64_t data = reinterpret_cast<uint64_t>(unregister_data);
+    data <<= 16;
+
+    int flags = 0;
+    if (fd_idx >= 0) {
+        flags |= IORING_ASYNC_CANCEL_FD_FIXED;
+        sfd = fd_idx;
+        unregister_data->fd_idx_ = fd_idx;
+    } else {
+        sfd = fd;
+        unregister_data->fd_idx_ = UINT16_MAX;
+    }
+
+    io_uring_prep_cancel_fd(sqe, sfd, flags);
+    data |= OpCodeToInt(OpCode::CancelRecv);
+    io_uring_sqe_set_data64(sqe, data);
+    if (fd_idx >= 0) {
+        sqe->cancel_flags |= IOSQE_FIXED_FILE;
+    }
+
+    reg_fds_.erase(it);
+    submit_cnt_++;
+    return 0;
+}
 
 void RingListener::HandleCqe(io_uring_cqe *cqe) {
     uint64_t data = io_uring_cqe_get_data64(cqe);
@@ -513,16 +517,18 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
             break;
         }
         case OpCode::CancelRecv: {
+            SocketUnRegisterData *unregister_data = reinterpret_cast<SocketUnRegisterData *>(data >> 16);
             if (cqe->res < 0) {
                 LOG(ERROR) << "Failed to cancel socket recv, errno: " << cqe->res
                         << ", group: " << task_group_->group_id_;
             }
-            data = data >> 16;
+            uint16_t fd_idx = unregister_data->fd_idx_;
             // If the fd is a registered file, recycles the fixed file slot.
-            if (data < UINT16_MAX) {
-                uint16_t fd_idx = (uint16_t) data;
+            if (fd_idx < UINT16_MAX) {
                 free_reg_fd_idx_.emplace_back(fd_idx);
             }
+            LOG(INFO) << "CancelRecv cqe->res: " << cqe->res;
+            unregister_data->Notify(cqe->res);
             break;
         }
         case OpCode::RegisterFile: {
