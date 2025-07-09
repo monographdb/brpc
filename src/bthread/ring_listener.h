@@ -65,7 +65,6 @@ struct RingFsyncData {
 };
 
 struct SocketRegisterData {
-    int fd_;
     brpc::Socket *sock_;
     bthread::Mutex mutex_;
     bthread::ConditionVariable cv_;

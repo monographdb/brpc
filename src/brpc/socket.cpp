@@ -687,8 +687,8 @@ int Socket::ResetFileDescriptor(int fd, size_t bound_gid) {
           args.sock_ = this;
           bthread_start_from_bound_group(bound_gid, &tid, &attr, SocketRegister,
                                                  &args);
-          args.Wait();
-          if (!args.success_) {
+          bool success = args.Wait();
+          if (!success) {
               PLOG(ERROR) << "Fail to add SocketId=" << id()
                       << " into IOURING";
               _fd.store(-1, butil::memory_order_release);
@@ -1348,7 +1348,7 @@ void *Socket::SocketRegister(void *arg) {
         return nullptr;
     }
 
-    // The caller will be notified when the socket is submitted to io_uring.
+    // The caller will be notified when the socket recv is successfully submitted to io_uring.
     return nullptr;
 }
 

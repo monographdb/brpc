@@ -32,7 +32,7 @@ RingListener::~RingListener() {
         SocketUnRegisterData data;
         data.fd_ = fd;
         SubmitCancel(&data);
-        // Should wait here? The worker probably has quit already.
+        // Not wait here because the worker should have quit already.
     }
     SubmitAll();
 
@@ -154,7 +154,6 @@ int RingListener::Register(SocketRegisterData *data) {
 
     return 0;
 }
-
 
 int RingListener::SubmitRecv(brpc::Socket *sock) {
     io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
