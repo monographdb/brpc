@@ -64,7 +64,7 @@ struct RingFsyncData {
     }
 };
 
-struct SocketRegisterArg {
+struct SocketRegisterData {
     int fd_;
     brpc::Socket *sock_;
     bthread::Mutex mutex_;
@@ -136,7 +136,7 @@ public:
     }
 
     int Register(brpc::Socket *sock);
-    int RegisterNew(SocketRegisterArg *sock);
+    int RegisterNew(SocketRegisterData *data);
 
     int SubmitRecv(brpc::Socket *sock);
 
@@ -192,7 +192,7 @@ private:
     int SubmitCancel(int fd);
 
     int SubmitRegisterFile(brpc::Socket *sock, int *fd, int32_t fd_idx);
-    int SubmitRegisterFileNew(SocketRegisterArg *arg, int *fd, int32_t fd_idx);
+    int SubmitRegisterFileNew(SocketRegisterData *register_data, int *fd, int32_t fd_idx);
 
     void HandleCqe(io_uring_cqe *cqe);
 

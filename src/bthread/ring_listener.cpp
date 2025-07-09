@@ -137,8 +137,8 @@ int RingListener::Register(brpc::Socket *sock) {
     return 0;
 }
 
-int RingListener::RegisterNew(SocketRegisterArg *arg) {
-    brpc::Socket *sock = arg->sock_;
+int RingListener::RegisterNew(SocketRegisterData *data) {
+    brpc::Socket *sock = data->sock_;
     int fd = sock->fd();
     CHECK(fd>=0);
 
@@ -148,7 +148,13 @@ int RingListener::RegisterNew(SocketRegisterArg *arg) {
         LOG(ERROR) << "Socket " << sock->id() << ", fd: " << sock->fd()
                << " has been registered before.";
         int ret = SubmitRecv(sock);
-        return ret;
+        if (ret < 0) {
+            return -1;
+        }
+        // reg_fd already stored.
+        sock->bound_g_ = task_group_;
+        data->Notify(true);
+        return 0;
     }
 
     sock->reg_fd_idx_ = -1;
@@ -157,23 +163,27 @@ int RingListener::RegisterNew(SocketRegisterArg *arg) {
     if (free_reg_fd_idx_.empty()) {
         // All registered file slots have been taken. Cannot register the socket's
         // fd.
-        reg_fds_.try_emplace(fd, -1);
-        // TODO(zkl): Submit the receive sqe and return result.
         ret = SubmitRecv(sock);
-        arg->Notify(true);
+        if (ret < 0) {
+            return -1;
+        }
+        reg_fds_.try_emplace(fd, -1);
+        sock->bound_g_ = task_group_;
+        data->Notify(true);
     } else {
         uint16_t fd_idx = free_reg_fd_idx_.back();
         free_reg_fd_idx_.pop_back();
-        reg_fds_.try_emplace(fd, fd_idx);
         sock->reg_fd_ = fd;
         sock->reg_fd_idx_ = fd_idx;
+        ret = SubmitRegisterFileNew(data, &sock->reg_fd_, fd_idx);
+        if (ret < 0) {
+            // Register fd fails. No sqe available.
+            sock->reg_fd_ = -1;
+            sock->reg_fd_idx_ = -1;
+            free_reg_fd_idx_.emplace_back(fd_idx);
+            return -1;
+        }
         // The caller will be notified when the socket is submitted to io_uring.
-        ret = SubmitRegisterFileNew(arg, &sock->reg_fd_, fd_idx);
-    }
-
-    if (ret < 0) {
-        reg_fds_.erase(fd);
-        return -1;
     }
 
     return 0;
@@ -205,7 +215,9 @@ int RingListener::SubmitRecv(brpc::Socket *sock) {
     // sqe->ioprio |= IORING_RECVSEND_BUNDLE;
 
     ++submit_cnt_;
-    // TODO(zkl): Submit the receive sqe and return result.
+    while (submit_cnt_ != 0) {
+        SubmitAll();
+    }
     return 0;
 }
 
@@ -338,11 +350,14 @@ int RingListener::SubmitAll() {
     int ret = io_uring_submit(&ring_);
     if (ret >= 0) {
         submit_cnt_ = submit_cnt_ >= ret ? submit_cnt_ - ret : 0;
+        if (submit_cnt_ != 0) {
+            LOG(INFO) << "Unable to submit all the sqes to IOuring, ret: " << ret
+                << ", left: " << submit_cnt_;
+        }
     } else {
-        // IO uring submission failed. Clears the submission count.
-        submit_cnt_ = 0;
-        LOG(ERROR) << "Failed to flush the IO uring submission queue for the "
-                "inbound listener.";
+        // IO uring submission failed. Wait for the next submit.
+        LOG(FATAL) << "Failed to flush the IO uring submission queue for the "
+                "inbound listener, ret: " << ret;
     }
     return ret;
 }
@@ -521,8 +536,8 @@ int RingListener::SubmitRegisterFile(brpc::Socket *sock, int *fd, int32_t fd_idx
     return 0;
 }
 
-int RingListener::SubmitRegisterFileNew(SocketRegisterArg *arg, int *fd, int32_t fd_idx) {
-    brpc::Socket *sock = arg->sock_;
+int RingListener::SubmitRegisterFileNew(SocketRegisterData *register_data, int *fd, int32_t fd_idx) {
+    brpc::Socket *sock = register_data->sock_;
 
     io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
     if (sqe == nullptr) {
@@ -533,7 +548,7 @@ int RingListener::SubmitRegisterFileNew(SocketRegisterArg *arg, int *fd, int32_t
     }
 
     io_uring_prep_files_update(sqe, fd, 1, fd_idx);
-    uint64_t data = reinterpret_cast<uint64_t>(arg);
+    uint64_t data = reinterpret_cast<uint64_t>(register_data);
     data = data << 16;
     data |= OpCodeToInt(OpCode::RegisterFileNew);
     io_uring_sqe_set_data64(sqe, data);
@@ -584,22 +599,29 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
             break;
         }
         case OpCode::RegisterFileNew: {
-            SocketRegisterArg *arg = reinterpret_cast<SocketRegisterArg *>(data >> 16);
-            brpc::Socket *sock = arg->sock_;
+            SocketRegisterData *register_data = reinterpret_cast<SocketRegisterData *>(data >> 16);
+            brpc::Socket *sock = register_data->sock_;
             if (cqe->res < 0) {
                 LOG(WARNING) << "IO uring file registration failed, errno: " << cqe->res
                         << ", group: " << task_group_->group_id_
                         << ", socket: " << *sock;
                 free_reg_fd_idx_.emplace_back(sock->reg_fd_idx_);
                 sock->reg_fd_idx_ = -1;
-                auto it = reg_fds_.find(sock->fd());
-                CHECK(it != reg_fds_.end());
-                it->second = -1;
             }
-            // TODO(zkl): remove reg_fd if SubmitRecv fails?
             int ret = SubmitRecv(sock);
-            // TODO(zkl): Submit the receive sqe and return result.
-            arg->Notify(true);
+            if (ret == 0) {
+                reg_fds_.try_emplace(sock->fd(), sock->reg_fd_idx_);
+                sock->bound_g_ = task_group_;
+                register_data->Notify(true);
+            } else {
+                // SubmitRecv fails, no sqe available. Unregister the sock.
+                if (sock->reg_fd_idx_ != -1) {
+                    free_reg_fd_idx_.emplace_back(sock->reg_fd_idx_);
+                    sock->reg_fd_idx_ = -1;
+                }
+                sock->bound_g_ = nullptr;
+                register_data->Notify(false);
+            }
             break;
         }
         case OpCode::FixedWrite:

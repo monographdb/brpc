@@ -1218,6 +1218,7 @@ void TaskGroup::Notify() {
     }
 }
 
+// TODO(zkl): keep notify signal and store it so that there won't be lots of lock acquiresation
 bool TaskGroup::NotifyIfWaiting() {
     if (!_waiting.load(std::memory_order_relaxed)) {
         return false;
@@ -1310,8 +1311,8 @@ int TaskGroup::RegisterSocket(brpc::Socket *sock) {
     return ring_listener_->Register(sock);
 }
 
-int TaskGroup::RegisterSocketNew(SocketRegisterArg *arg) {
-    return ring_listener_->RegisterNew(arg);
+int TaskGroup::RegisterSocketNew(SocketRegisterData *data) {
+    return ring_listener_->RegisterNew(data);
 }
 
 int TaskGroup::UnregisterSocket(int fd) {

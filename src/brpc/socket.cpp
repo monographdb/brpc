@@ -683,12 +683,7 @@ int Socket::ResetFileDescriptor(int fd, size_t bound_gid) {
         // Start bthread that continously processes messages of this socket.
         bthread_t tid;
         attr.keytable_pool = _keytable_pool;
-          // TODO(zkl): handle SocketRegister error return -1
-          //  should wait for the recv cqe here?
-        // bthread_start_from_bound_group(bound_gid, &tid, &attr, SocketRegister,
-        //                                this);
-          // SocketRegisterData args(this);
-          SocketRegisterArg args;
+          SocketRegisterData args;
           args.sock_ = this;
           bthread_start_from_bound_group(bound_gid, &tid, &attr, SocketRegisterNew,
                                                  &args);
@@ -1333,7 +1328,7 @@ void *Socket::SocketProcess(void *arg) {
 }
 
 void *Socket::SocketRegister(void *arg) {
-  bthread::TaskGroup *cur_group = bthread::TaskGroup::VolatileTLSTaskGroup();
+  bthread::TaskGroup *cur_group = bthread::tls_task_group;
 
   Socket *sock = static_cast<Socket *>(arg);
   SocketUniquePtr s_uptr{sock};
@@ -1351,10 +1346,9 @@ void *Socket::SocketRegister(void *arg) {
 }
 
 void *Socket::SocketRegisterNew(void *arg) {
-    bthread::TaskGroup *cur_group = bthread::TaskGroup::VolatileTLSTaskGroup();
+    bthread::TaskGroup *cur_group = bthread::tls_task_group;
 
-    // SocketRegisterData *data = static_cast<SocketRegisterData *>(arg);
-    SocketRegisterArg *data = static_cast<SocketRegisterArg *>(arg);
+    SocketRegisterData *data = static_cast<SocketRegisterData *>(arg);
     LOG(INFO) << "Socket::SocketRegisterNew: " << *data->sock_;
 
     Socket *sock = data->sock_;
@@ -1362,16 +1356,17 @@ void *Socket::SocketRegisterNew(void *arg) {
 
     int reg_ret = cur_group->RegisterSocketNew(data);
     if (reg_ret < 0) {
-        data->Notify(false);
         LOG(ERROR) << "Failed to register the socket " << sock->id()
                    << " to the IO uring listener.";
-        // TODO(zkl): return the result to ResetFileDescriptor
+        sock->bound_g_ = nullptr;
+        sock->reg_fd_idx_ = -1;
+        sock->reg_fd_ = -1;
+        // return the result to Socket::Create
+        data->Notify(false);
         return nullptr;
     }
 
     // The caller will be notified when the socket is submitted to io_uring.
-    // TODO(zkl): reset this if submit recv fails
-    sock->bound_g_ = cur_group;
     return nullptr;
 }
 
