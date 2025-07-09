@@ -72,17 +72,14 @@ struct SocketRegisterData {
     bool success_{false};
 
     bool Wait() {
-        LOG(INFO) << "SocketRegisterArg waiting...";
         std::unique_lock lk(mutex_);
         while (!finish_) {
             cv_.wait(lk);
         }
-        LOG(INFO) << "SocketRegisterArg wait finishes...";
         return success_;
     }
 
     void Notify(bool success) {
-        LOG(INFO) << "SocketRegisterArg Notify: " << success;
         std::unique_lock lk(mutex_);
         finish_ = true;
         success_ = success;
@@ -99,20 +96,15 @@ struct SocketUnRegisterData {
     int res_{-1};
 
     int Wait() {
-        LOG(INFO) << "SocketUnRegisterArg waiting..." << this;
-
         std::unique_lock lk(mutex_);
         while (!finish_) {
             cv_.wait(lk);
         }
-        LOG(INFO) << "SocketUnRegisterArg wait finishes..." << this;
 
         return res_;
     }
 
     void Notify(int res) {
-        LOG(INFO) << "SocketUnRegisterArg Notify: " << res << " " << this;
-
         std::unique_lock lk(mutex_);
         finish_ = true;
         res_ = res;

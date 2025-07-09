@@ -108,7 +108,6 @@ int RingListener::Register(SocketRegisterData *data) {
     int fd = sock->fd();
     CHECK(fd>=0);
 
-    LOG(INFO) << "RingListener::RegisterNew: " << *sock;
     auto it = reg_fds_.find(fd);
     if (it != reg_fds_.end()) {
         LOG(ERROR) << "Socket " << *sock << " has been registered before.";
@@ -162,7 +161,6 @@ int RingListener::SubmitRecv(brpc::Socket *sock) {
              << task_group_->group_id_;
         return -1;
     }
-    LOG(INFO) << "SubmitRecv: " << *sock;
     int fd_idx = sock->reg_fd_idx_;
     int sfd = fd_idx >= 0 ? fd_idx : sock->fd();
     io_uring_prep_recv_multishot(sqe, sfd, NULL, 0, 0);
@@ -315,7 +313,7 @@ int RingListener::SubmitAll() {
     if (ret >= 0) {
         submit_cnt_ = submit_cnt_ >= ret ? submit_cnt_ - ret : 0;
         if (submit_cnt_ != 0) {
-            LOG(INFO) << "Unable to submit all the sqes to IOuring, ret: " << ret
+            LOG(WARNING) << "Unable to submit all the sqes to IOuring, ret: " << ret
                 << ", left: " << submit_cnt_;
         }
     } else {
@@ -526,7 +524,6 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
             if (fd_idx < UINT16_MAX) {
                 free_reg_fd_idx_.emplace_back(fd_idx);
             }
-            LOG(INFO) << "CancelRecv cqe->res: " << cqe->res;
             unregister_data->Notify(cqe->res);
             break;
         }

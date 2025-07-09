@@ -1331,7 +1331,6 @@ void *Socket::SocketRegister(void *arg) {
     bthread::TaskGroup *cur_group = bthread::tls_task_group;
 
     SocketRegisterData *data = static_cast<SocketRegisterData *>(arg);
-    LOG(INFO) << "Socket::SocketRegisterNew: " << *data->sock_;
 
     Socket *sock = data->sock_;
     SocketUniquePtr s_uptr{sock};
@@ -3457,7 +3456,6 @@ bool Socket::RecycleInBackgroundIfNecessary() {
             LOG(FATAL) << "Fail to start SocketProcess";
             SocketRecycle(this);
         }
-        LOG(INFO) << "RecycleInBackground sock: " << *this;
         return true;
     }
     return false;
