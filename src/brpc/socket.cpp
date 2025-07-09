@@ -1231,7 +1231,7 @@ void Socket::OnRecycle() {
                 if (cur_group == bound_g_) {
                     int res = bound_g_->UnregisterSocket(&args);
                     if (res < 0) {
-                        LOG(ERROR) << "Calling UnregisterSocket failed: " << res;
+                        LOG(ERROR) << "Calling UnregisterSocket failed: " << res << " sock: " << *this;
                         args.Notify(-1);
                     }
                 } else {
@@ -1247,7 +1247,7 @@ void Socket::OnRecycle() {
                 }
                 int res = args.Wait();
                 if (res < 0) {
-                    LOG(ERROR) << "SocketUnRegister failed: " << res;
+                    LOG(ERROR) << "SocketUnRegister failed: " << res << " sock: " << *this;
                 }
                 bound_g_ = nullptr;
                 reg_fd_idx_ = -1;
@@ -1338,7 +1338,7 @@ void *Socket::SocketRegister(void *arg) {
 
     int reg_ret = cur_group->RegisterSocket(data);
     if (reg_ret < 0) {
-        LOG(ERROR) << "Failed to register the socket " << sock->id()
+        LOG(ERROR) << "Failed to register the socket " << *sock
                    << " to the IO uring listener.";
         sock->bound_g_ = nullptr;
         sock->reg_fd_idx_ = -1;

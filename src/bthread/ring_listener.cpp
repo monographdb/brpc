@@ -111,8 +111,7 @@ int RingListener::Register(SocketRegisterData *data) {
     LOG(INFO) << "RingListener::RegisterNew: " << *sock;
     auto it = reg_fds_.find(fd);
     if (it != reg_fds_.end()) {
-        LOG(ERROR) << "Socket " << sock->id() << ", fd: " << sock->fd()
-               << " has been registered before.";
+        LOG(ERROR) << "Socket " << *sock << " has been registered before.";
         int ret = SubmitRecv(sock);
         if (ret < 0) {
             return -1;
@@ -519,7 +518,8 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
             SocketUnRegisterData *unregister_data = reinterpret_cast<SocketUnRegisterData *>(data >> 16);
             if (cqe->res < 0) {
                 LOG(ERROR) << "Failed to cancel socket recv, errno: " << cqe->res
-                        << ", group: " << task_group_->group_id_;
+                        << ", group: " << task_group_->group_id_
+                        << ", sock: " << unregister_data->fd_;
             }
             uint16_t fd_idx = unregister_data->fd_idx_;
             // If the fd is a registered file, recycles the fixed file slot.
