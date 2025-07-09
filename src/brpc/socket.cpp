@@ -685,7 +685,7 @@ int Socket::ResetFileDescriptor(int fd, size_t bound_gid) {
         attr.keytable_pool = _keytable_pool;
           SocketRegisterData args;
           args.sock_ = this;
-          bthread_start_from_bound_group(bound_gid, &tid, &attr, SocketRegisterNew,
+          bthread_start_from_bound_group(bound_gid, &tid, &attr, SocketRegister,
                                                  &args);
           args.Wait();
           if (!args.success_) {
@@ -1236,7 +1236,7 @@ void Socket::OnRecycle() {
                     // This thread is not the socket's bound_g_, start a bound bthread.
                     bthread_attr_t attr = BTHREAD_ATTR_NORMAL;
                     bthread_t tid;
-                    SocketUnRegisterArg args;
+                    SocketUnRegisterData args;
                     args.fd_ = prev_fd;
                     void *args_ptr = &args;
                     if (bthread_start_from_bound_group(
@@ -1328,24 +1328,6 @@ void *Socket::SocketProcess(void *arg) {
 }
 
 void *Socket::SocketRegister(void *arg) {
-  bthread::TaskGroup *cur_group = bthread::tls_task_group;
-
-  Socket *sock = static_cast<Socket *>(arg);
-  SocketUniquePtr s_uptr{sock};
-
-  int reg_ret = cur_group->RegisterSocket(sock);
-  if (reg_ret < 0) {
-    LOG(ERROR) << "Failed to register the socket " << sock->id()
-               << " to the IO uring listener.";
-      // TODO(zkl): return the result to ResetFileDescriptor
-    return nullptr;
-  }
-
-  sock->bound_g_ = cur_group;
-  return nullptr;
-}
-
-void *Socket::SocketRegisterNew(void *arg) {
     bthread::TaskGroup *cur_group = bthread::tls_task_group;
 
     SocketRegisterData *data = static_cast<SocketRegisterData *>(arg);
@@ -1354,7 +1336,7 @@ void *Socket::SocketRegisterNew(void *arg) {
     Socket *sock = data->sock_;
     SocketUniquePtr s_uptr{sock};
 
-    int reg_ret = cur_group->RegisterSocketNew(data);
+    int reg_ret = cur_group->RegisterSocket(data);
     if (reg_ret < 0) {
         LOG(ERROR) << "Failed to register the socket " << sock->id()
                    << " to the IO uring listener.";
@@ -1372,7 +1354,7 @@ void *Socket::SocketRegisterNew(void *arg) {
 
 void *Socket::SocketUnRegister(void *arg) {
     bthread::TaskGroup *cur_group = bthread::tls_task_group;
-    SocketUnRegisterArg *args = static_cast<SocketUnRegisterArg *>(arg);
+    SocketUnRegisterData *args = static_cast<SocketUnRegisterData *>(arg);
     // TODO(zkl): should wait the cancel cqe and return the result to caller?
     int res = cur_group->UnregisterSocket(args->fd_);
     args->Notify(res);

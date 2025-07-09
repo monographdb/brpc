@@ -230,8 +230,7 @@ public:
     int modules_cnt_{0};
 
 #ifdef IO_URING_ENABLED
-    int RegisterSocket(brpc::Socket *sock);
-    int RegisterSocketNew(SocketRegisterData *data);
+    int RegisterSocket(SocketRegisterData *data);
     int UnregisterSocket(int fd);
     void SocketRecv(brpc::Socket *sock);
     int SocketFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, uint32_t ring_buf_size);

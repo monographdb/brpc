@@ -719,7 +719,6 @@ friend void DereferenceSocket(Socket*);
 #ifdef IO_URING_ENABLED
     static void *SocketProcess(void *);
     static void *SocketRegister(void *);
-    static void *SocketRegisterNew(void *);
     static void *SocketUnRegister(void *);
 #endif
 

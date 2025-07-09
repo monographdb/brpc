@@ -100,44 +100,7 @@ int RingListener::Init() {
     return 0;
 }
 
-int RingListener::Register(brpc::Socket *sock) {
-    int fd = sock->fd();
-    CHECK(fd>=0);
-
-    auto it = reg_fds_.find(fd);
-    if (it != reg_fds_.end()) {
-        LOG(ERROR) << "Socket " << sock->id() << ", fd: " << sock->fd()
-               << " has been registered before.";
-        int ret = SubmitRecv(sock);
-        return ret;
-    }
-
-    sock->reg_fd_idx_ = -1;
-    int ret = -1;
-
-    if (free_reg_fd_idx_.empty()) {
-        // All registered file slots have been taken. Cannot register the socket's
-        // fd.
-        reg_fds_.try_emplace(fd, -1);
-        ret = SubmitRecv(sock);
-    } else {
-        uint16_t fd_idx = free_reg_fd_idx_.back();
-        free_reg_fd_idx_.pop_back();
-        reg_fds_.try_emplace(fd, fd_idx);
-        sock->reg_fd_ = fd;
-        sock->reg_fd_idx_ = fd_idx;
-        ret = SubmitRegisterFile(sock, &sock->reg_fd_, fd_idx);
-    }
-
-    if (ret < 0) {
-        reg_fds_.erase(fd);
-        return -1;
-    }
-
-    return 0;
-}
-
-int RingListener::RegisterNew(SocketRegisterData *data) {
+int RingListener::Register(SocketRegisterData *data) {
     brpc::Socket *sock = data->sock_;
     int fd = sock->fd();
     CHECK(fd>=0);
@@ -175,7 +138,7 @@ int RingListener::RegisterNew(SocketRegisterData *data) {
         free_reg_fd_idx_.pop_back();
         sock->reg_fd_ = fd;
         sock->reg_fd_idx_ = fd_idx;
-        ret = SubmitRegisterFileNew(data, &sock->reg_fd_, fd_idx);
+        ret = SubmitRegisterFile(data, &sock->reg_fd_, fd_idx);
         if (ret < 0) {
             // Register fd fails. No sqe available.
             sock->reg_fd_ = -1;
@@ -516,27 +479,7 @@ int RingListener::SubmitCancel(int fd) {
     return 0;
 }
 
-int RingListener::SubmitRegisterFile(brpc::Socket *sock, int *fd, int32_t fd_idx) {
-    io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
-    if (sqe == nullptr) {
-        LOG(ERROR) << "IO uring submission queue is full for the inbound "
-                "listener, group: "
-             << task_group_->group_id_;
-        return -1;
-    }
-
-    io_uring_prep_files_update(sqe, fd, 1, fd_idx);
-    uint64_t data = reinterpret_cast<uint64_t>(sock);
-    data = data << 16;
-    data |= OpCodeToInt(OpCode::RegisterFile);
-    io_uring_sqe_set_data64(sqe, data);
-    sock->reg_fd_idx_ = fd_idx;
-
-    ++submit_cnt_;
-    return 0;
-}
-
-int RingListener::SubmitRegisterFileNew(SocketRegisterData *register_data, int *fd, int32_t fd_idx) {
+int RingListener::SubmitRegisterFile(SocketRegisterData *register_data, int *fd, int32_t fd_idx) {
     brpc::Socket *sock = register_data->sock_;
 
     io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
@@ -550,7 +493,7 @@ int RingListener::SubmitRegisterFileNew(SocketRegisterData *register_data, int *
     io_uring_prep_files_update(sqe, fd, 1, fd_idx);
     uint64_t data = reinterpret_cast<uint64_t>(register_data);
     data = data << 16;
-    data |= OpCodeToInt(OpCode::RegisterFileNew);
+    data |= OpCodeToInt(OpCode::RegisterFile);
     io_uring_sqe_set_data64(sqe, data);
     sock->reg_fd_idx_ = fd_idx;
 
@@ -583,22 +526,6 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
             break;
         }
         case OpCode::RegisterFile: {
-            brpc::Socket *sock = reinterpret_cast<brpc::Socket *>(data >> 16);
-            if (cqe->res < 0) {
-                LOG(WARNING) << "IO uring file registration failed, errno: " << cqe->res
-                        << ", group: " << task_group_->group_id_
-                        << ", socket: " << *sock;
-                free_reg_fd_idx_.emplace_back(sock->reg_fd_idx_);
-                sock->reg_fd_idx_ = -1;
-                auto it = reg_fds_.find(sock->fd());
-                CHECK(it != reg_fds_.end());
-                it->second = -1;
-            }
-            // TODO(zkl): remove reg_fd if SubmitRecv fails?
-            SubmitRecv(sock);
-            break;
-        }
-        case OpCode::RegisterFileNew: {
             SocketRegisterData *register_data = reinterpret_cast<SocketRegisterData *>(data >> 16);
             brpc::Socket *sock = register_data->sock_;
             if (cqe->res < 0) {

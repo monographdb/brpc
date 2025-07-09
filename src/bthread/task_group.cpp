@@ -1307,12 +1307,8 @@ void TaskGroup::NotifyRegisteredModules(WorkerStatus status) {
 }
 
 #ifdef IO_URING_ENABLED
-int TaskGroup::RegisterSocket(brpc::Socket *sock) {
-    return ring_listener_->Register(sock);
-}
-
-int TaskGroup::RegisterSocketNew(SocketRegisterData *data) {
-    return ring_listener_->RegisterNew(data);
+int TaskGroup::RegisterSocket(SocketRegisterData *data) {
+    return ring_listener_->Register(data);
 }
 
 int TaskGroup::UnregisterSocket(int fd) {

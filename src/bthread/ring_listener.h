@@ -91,7 +91,7 @@ struct SocketRegisterData {
     }
 };
 
-struct SocketUnRegisterArg {
+struct SocketUnRegisterData {
     int fd_;
     bthread::Mutex mutex_;
     bthread::ConditionVariable cv_;
@@ -135,8 +135,7 @@ public:
         }
     }
 
-    int Register(brpc::Socket *sock);
-    int RegisterNew(SocketRegisterData *data);
+    int Register(SocketRegisterData *data);
 
     int SubmitRecv(brpc::Socket *sock);
 
@@ -191,8 +190,7 @@ private:
 
     int SubmitCancel(int fd);
 
-    int SubmitRegisterFile(brpc::Socket *sock, int *fd, int32_t fd_idx);
-    int SubmitRegisterFileNew(SocketRegisterData *register_data, int *fd, int32_t fd_idx);
+    int SubmitRegisterFile(SocketRegisterData *register_data, int *fd, int32_t fd_idx);
 
     void HandleCqe(io_uring_cqe *cqe);
 
@@ -207,7 +205,6 @@ private:
         NonFixedWriteFinish,
         WaitingNonFixedWrite,
         Fsync,
-        RegisterFileNew,
         Noop = 255
     };
 
@@ -231,8 +228,6 @@ private:
                 return 7;
             case OpCode::Fsync:
                 return 8;
-            case OpCode::RegisterFileNew:
-                return 9;
             default:
                 return UINT8_MAX;
         }
@@ -258,8 +253,6 @@ private:
                 return OpCode::WaitingNonFixedWrite;
             case 8:
                 return OpCode::Fsync;
-            case 9:
-                return OpCode::RegisterFileNew;
             default:
                 return OpCode::Noop;
         }
