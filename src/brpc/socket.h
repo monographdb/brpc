@@ -44,6 +44,31 @@
 #ifdef IO_URING_ENABLED
 class RingListener;
 struct InboundRingBuf;
+struct SocketRegisterArg{
+    brpc::Socket *sock_{nullptr};
+    bool finish_{false};
+    
+    int ret_{0};
+
+    bthread::Mutex mutex_;
+    bthread::ConditionVariable cv_;
+
+    SocketRegisterArg(brpc::Socket *sock):sock_(sock){}
+
+    void WaitCallBack(){
+        std::unique_lock lk(mutex_);
+        while(!finish_)
+            cv_.wait(lk);
+    }
+
+    void CallBack(int ret){
+        std::unique_lock lock(mutex_);
+        finish_ = true;
+        if(ret < 0)
+            ret_ = ret;
+        cv_.notify_one();
+    }
+};
 #endif
 namespace bthread {
 class TaskGroup;

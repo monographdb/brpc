@@ -681,12 +681,25 @@ int Socket::ResetFileDescriptor(int fd, size_t bound_gid) {
         ReAddress(&socket_uptr);
         (void)socket_uptr.release();
         // Start bthread that continously processes messages of this socket.
-        bthread_t tid;
+        bthread_t b_tid;
         attr.keytable_pool = _keytable_pool;
-          // TODO(zkl): handle SocketRegister error return -1
-          //  should wait for the recv cqe here?
-        bthread_start_from_bound_group(bound_gid, &tid, &attr, SocketRegister,
-                                       this);
+
+        SocketRegisterArg arg(this);
+
+        
+        LOG(INFO) << "launch a bthread for SocketRegister";
+        bthread_start_from_bound_group(bound_gid, &b_tid, &attr, SocketRegister, &arg);
+        LOG(INFO) << "start waiting callback";
+        arg.WaitCallBack();
+
+        if(arg.ret_ < 0){
+            LOG(ERROR) << "fail to register at ResetFileDescriptor";
+            return -1;
+        } else {
+            LOG(INFO) << "success register socket "<<fd;
+        }
+        //                    PLOG(ERROR) << "Fail to add SocketId=" << id()
+        //   << " into EventDispatcher";
       } else {
 #endif
         if (GetGlobalEventDispatcher(fd).AddConsumer(id(), fd) != 0) {
@@ -1319,21 +1332,24 @@ void *Socket::SocketProcess(void *arg) {
     return nullptr;
 }
 
+
 void *Socket::SocketRegister(void *arg) {
   bthread::TaskGroup *cur_group = bthread::TaskGroup::VolatileTLSTaskGroup();
 
-  Socket *sock = static_cast<Socket *>(arg);
-  SocketUniquePtr s_uptr{sock};
-
-  int reg_ret = cur_group->RegisterSocket(sock);
-  if (reg_ret < 0) {
-    LOG(ERROR) << "Failed to register the socket " << sock->id()
-               << " to the IO uring listener.";
-      // TODO(zkl): return the result to ResetFileDescriptor
-    return nullptr;
-  }
-
+//   Socket *sock = static_cast<Socket *>(arg);
+  SocketRegisterArg *sock_arg = static_cast<SocketRegisterArg *>(arg);
+  if(sock_arg == nullptr){
+    LOG(ERROR) << "error, can not convert in Socket::SocketRegister";
+  };
+  Socket *sock = sock_arg->sock_;
   sock->bound_g_ = cur_group;
+
+//   SocketUniquePtr s_uptr{sock};
+  
+//   sock_arg->ret_ = cur_group->RegisterSocket(sock);
+
+    cur_group->RegisterSocket(sock_arg);
+
   return nullptr;
 }
 

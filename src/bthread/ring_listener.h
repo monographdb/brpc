@@ -108,17 +108,20 @@ public:
         }
     }
 
-    int Register(brpc::Socket *sock);
 
-    int SubmitRecv(brpc::Socket *sock);
+    // int AddRecv(brpc::Socket *sock);
+    int AddRecv(SocketRegisterArg* arg);
 
-    int SubmitFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, uint32_t ring_buf_size);
+    int AddMultishot(brpc::Socket *sock);
 
-    int SubmitNonFixedWrite(brpc::Socket *sock);
+    int AddFixedWrite(brpc::Socket *sock, uint16_t ring_buf_idx, uint32_t ring_buf_size);
 
-    int SubmitWaitingNonFixedWrite(brpc::Socket *sock);
+    int AddNonFixedWrite(brpc::Socket *sock);
 
-    int SubmitFsync(RingFsyncData *args);
+    int AddWaitingNonFixedWrite(brpc::Socket *sock);
+
+    int AddFsync(RingFsyncData* arg);
+    int AddFsync(int fd);
 
     bool HasJobsToSubmit() const {
         return submit_cnt_ > 0;
@@ -132,8 +135,7 @@ public:
     int SubmitAll();
 
     int Unregister(int fd) {
-        // TODO(zkl): should wait for the cancel cqe?
-        return SubmitCancel(fd);
+        return AddRequestCancel(fd);
     }
 
     void PollAndNotify();
@@ -155,20 +157,56 @@ public:
     void RecycleWriteBuf(uint16_t buf_idx);
 
 private:
+
+    struct CqeCallBackData{
+        brpc::Socket *sock_;
+        io_uring_cqe *cqe_{nullptr};
+        bool finish_{false};
+        bool need_notify_{true}; // only notify once
+        uint64_t others;
+
+        bthread::Mutex mutex_;
+        bthread::ConditionVariable cv_;
+
+
+        void WaitCallBack(){
+            std::unique_lock lk(mutex_);
+            while(!finish_)
+                cv_.wait(lk);
+        }
+
+        void CallBack(io_uring_cqe *cqe){
+            if(need_notify_){
+                need_notify_ = false;
+                std::unique_lock lock(mutex_);
+                cqe_ = cqe;
+                finish_ = true;
+
+                cv_.notify_one();
+            }
+        }
+
+        CqeCallBackData(brpc::Socket *sock):sock_(sock){}
+    };
+    
+
     void FreeBuf() {
         if (in_buf_ != nullptr) {
             free(in_buf_);
         }
     }
 
-    int SubmitCancel(int fd);
+    // cancel ring中所有使用fd的request
+    int AddRequestCancel(int fd);
 
-    int SubmitRegisterFile(brpc::Socket *sock, int *fd, int32_t fd_idx);
+    // update register fd
+    int AddFileRegister(brpc::Socket *sock, int *fd, int32_t fd_idx);
 
     void HandleCqe(io_uring_cqe *cqe);
 
     enum struct OpCode : uint8_t {
-        Recv = 0,
+        Invalid = 0, // 未初始化
+        Recv,
         CancelRecv,
         RegisterFile,
         // TODO(zkl): Remove (Non)FixedWrite, merge into Write, WriteFinish
@@ -247,7 +285,7 @@ private:
     // cqe_ready_ is set by the ring listener and unset by the worker
     std::atomic<bool> cqe_ready_{false};
     uint16_t submit_cnt_{0};
-    std::unordered_map<int, int> reg_fds_;
+    std::unordered_map<int, int> reg_fds_;  // fd --> registered fd array index
     std::mutex mux_;
     std::condition_variable cv_;
     std::thread poll_thd_;
@@ -265,15 +303,20 @@ private:
         buf_ring_size
     };
 
+    // 工作线程与背景线程交互变量
     std::atomic<bool> has_external_{true};
 
+    // 始终存在冲突，尽管冲突的概率很小？
     std::vector<uint16_t> free_reg_fd_idx_;
+    // int registered_fds[1024];
 
     std::unique_ptr<RingWriteBufferPool> write_buf_pool_;
     moodycamel::ConcurrentQueue<uint16_t> write_bufs_;
     std::atomic<int64_t> recycle_buf_cnt_{0};
 
     inline static size_t buf_length = sysconf(_SC_PAGESIZE);
+
+    // inline static size_t buf_ring_size = 2;
     inline static size_t buf_ring_size = 1024;
 
     RingModule *ring_module_{};
