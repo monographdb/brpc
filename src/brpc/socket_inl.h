@@ -110,8 +110,16 @@ inline int Socket::Dereference() {
                     expected_vref, MakeVRef(id_ver + 2, 0),
                     butil::memory_order_acquire,
                     butil::memory_order_relaxed)) {
+#ifdef IO_URING_ENABLED
+                bool success = RecycleInBackgroundIfNecessary();
+                if (!success) {
+                    OnRecycle();
+                    return_resource(SlotOfSocketId(id));
+                }
+#else
                 OnRecycle();
                 return_resource(SlotOfSocketId(id));
+#endif
                 return 1;
             }
             return 0;

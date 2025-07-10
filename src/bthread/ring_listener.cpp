@@ -29,7 +29,10 @@
 
 RingListener::~RingListener() {
     for (auto [fd, fd_idx]: reg_fds_) {
-        SubmitCancel(fd);
+        SocketUnRegisterData data;
+        data.fd_ = fd;
+        SubmitCancel(&data);
+        // Not wait here because the worker should have quit already.
     }
     SubmitAll();
 
@@ -100,16 +103,22 @@ int RingListener::Init() {
     return 0;
 }
 
-int RingListener::Register(brpc::Socket *sock) {
+int RingListener::Register(SocketRegisterData *data) {
+    brpc::Socket *sock = data->sock_;
     int fd = sock->fd();
     CHECK(fd>=0);
 
     auto it = reg_fds_.find(fd);
     if (it != reg_fds_.end()) {
-        LOG(ERROR) << "Socket " << sock->id() << ", fd: " << sock->fd()
-               << " has been registered before.";
+        LOG(ERROR) << "Socket " << *sock << " has been registered before.";
         int ret = SubmitRecv(sock);
-        return ret;
+        if (ret < 0) {
+            return -1;
+        }
+        // reg_fd already stored.
+        sock->bound_g_ = task_group_;
+        data->Notify(true);
+        return 0;
     }
 
     sock->reg_fd_idx_ = -1;
@@ -118,20 +127,27 @@ int RingListener::Register(brpc::Socket *sock) {
     if (free_reg_fd_idx_.empty()) {
         // All registered file slots have been taken. Cannot register the socket's
         // fd.
-        reg_fds_.try_emplace(fd, -1);
         ret = SubmitRecv(sock);
+        if (ret < 0) {
+            return -1;
+        }
+        reg_fds_.try_emplace(fd, -1);
+        sock->bound_g_ = task_group_;
+        data->Notify(true);
     } else {
         uint16_t fd_idx = free_reg_fd_idx_.back();
         free_reg_fd_idx_.pop_back();
-        reg_fds_.try_emplace(fd, fd_idx);
         sock->reg_fd_ = fd;
         sock->reg_fd_idx_ = fd_idx;
-        ret = SubmitRegisterFile(sock, &sock->reg_fd_, fd_idx);
-    }
-
-    if (ret < 0) {
-        reg_fds_.erase(fd);
-        return -1;
+        ret = SubmitRegisterFile(data, &sock->reg_fd_, fd_idx);
+        if (ret < 0) {
+            // Register fd fails. No sqe available.
+            sock->reg_fd_ = -1;
+            sock->reg_fd_idx_ = -1;
+            free_reg_fd_idx_.emplace_back(fd_idx);
+            return -1;
+        }
+        // The caller will be notified when the socket is submitted to io_uring.
     }
 
     return 0;
@@ -161,6 +177,9 @@ int RingListener::SubmitRecv(brpc::Socket *sock) {
     // sqe->ioprio |= IORING_RECVSEND_BUNDLE;
 
     ++submit_cnt_;
+    while (submit_cnt_ != 0) {
+        SubmitAll();
+    }
     return 0;
 }
 
@@ -293,11 +312,14 @@ int RingListener::SubmitAll() {
     int ret = io_uring_submit(&ring_);
     if (ret >= 0) {
         submit_cnt_ = submit_cnt_ >= ret ? submit_cnt_ - ret : 0;
+        if (submit_cnt_ != 0) {
+            LOG(WARNING) << "Unable to submit all the sqes to IOuring, ret: " << ret
+                << ", left: " << submit_cnt_;
+        }
     } else {
-        // IO uring submission failed. Clears the submission count.
-        submit_cnt_ = 0;
-        LOG(ERROR) << "Failed to flush the IO uring submission queue for the "
-                "inbound listener.";
+        // IO uring submission failed. Wait for the next submit.
+        LOG(FATAL) << "Failed to flush the IO uring submission queue for the "
+                "inbound listener, ret: " << ret;
     }
     return ret;
 }
@@ -414,7 +436,30 @@ void RingListener::RecycleWriteBuf(uint16_t buf_idx) {
     }
 }
 
-int RingListener::SubmitCancel(int fd) {
+int RingListener::SubmitRegisterFile(SocketRegisterData *register_data, int *fd, int32_t fd_idx) {
+    brpc::Socket *sock = register_data->sock_;
+
+    io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
+    if (sqe == nullptr) {
+        LOG(ERROR) << "IO uring submission queue is full for the inbound "
+                "listener, group: "
+             << task_group_->group_id_;
+        return -1;
+    }
+
+    io_uring_prep_files_update(sqe, fd, 1, fd_idx);
+    uint64_t data = reinterpret_cast<uint64_t>(register_data);
+    data = data << 16;
+    data |= OpCodeToInt(OpCode::RegisterFile);
+    io_uring_sqe_set_data64(sqe, data);
+    sock->reg_fd_idx_ = fd_idx;
+
+    ++submit_cnt_;
+    return 0;
+}
+
+int RingListener::SubmitCancel(SocketUnRegisterData *unregister_data) {
+    int fd = unregister_data->fd_;
     io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
     if (sqe == nullptr) {
         LOG(ERROR) << "IO uring submission queue is full for the inbound "
@@ -432,16 +477,17 @@ int RingListener::SubmitCancel(int fd) {
     }
 
     int sfd;
-    uint64_t data;
+    uint64_t data = reinterpret_cast<uint64_t>(unregister_data);
+    data <<= 16;
 
     int flags = 0;
     if (fd_idx >= 0) {
         flags |= IORING_ASYNC_CANCEL_FD_FIXED;
         sfd = fd_idx;
-        data = fd_idx << 16;
+        unregister_data->fd_idx_ = fd_idx;
     } else {
         sfd = fd;
-        data = UINT16_MAX << 16;
+        unregister_data->fd_idx_ = UINT16_MAX;
     }
 
     io_uring_prep_cancel_fd(sqe, sfd, flags);
@@ -456,26 +502,6 @@ int RingListener::SubmitCancel(int fd) {
     return 0;
 }
 
-int RingListener::SubmitRegisterFile(brpc::Socket *sock, int *fd, int32_t fd_idx) {
-    io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
-    if (sqe == nullptr) {
-        LOG(ERROR) << "IO uring submission queue is full for the inbound "
-                "listener, group: "
-             << task_group_->group_id_;
-        return -1;
-    }
-
-    io_uring_prep_files_update(sqe, fd, 1, fd_idx);
-    uint64_t data = reinterpret_cast<uint64_t>(sock);
-    data = data << 16;
-    data |= OpCodeToInt(OpCode::RegisterFile);
-    io_uring_sqe_set_data64(sqe, data);
-    sock->reg_fd_idx_ = fd_idx;
-
-    ++submit_cnt_;
-    return 0;
-}
-
 void RingListener::HandleCqe(io_uring_cqe *cqe) {
     uint64_t data = io_uring_cqe_get_data64(cqe);
     OpCode op = IntToOpCode(data & UINT8_MAX);
@@ -487,31 +513,44 @@ void RingListener::HandleCqe(io_uring_cqe *cqe) {
             break;
         }
         case OpCode::CancelRecv: {
+            SocketUnRegisterData *unregister_data = reinterpret_cast<SocketUnRegisterData *>(data >> 16);
             if (cqe->res < 0) {
                 LOG(ERROR) << "Failed to cancel socket recv, errno: " << cqe->res
-                        << ", group: " << task_group_->group_id_;
+                        << ", group: " << task_group_->group_id_
+                        << ", sock: " << unregister_data->fd_;
             }
-            data = data >> 16;
+            uint16_t fd_idx = unregister_data->fd_idx_;
             // If the fd is a registered file, recycles the fixed file slot.
-            if (data < UINT16_MAX) {
-                uint16_t fd_idx = (uint16_t) data;
+            if (fd_idx < UINT16_MAX) {
                 free_reg_fd_idx_.emplace_back(fd_idx);
             }
+            unregister_data->Notify(cqe->res);
             break;
         }
         case OpCode::RegisterFile: {
-            brpc::Socket *sock = reinterpret_cast<brpc::Socket *>(data >> 16);
+            SocketRegisterData *register_data = reinterpret_cast<SocketRegisterData *>(data >> 16);
+            brpc::Socket *sock = register_data->sock_;
             if (cqe->res < 0) {
                 LOG(WARNING) << "IO uring file registration failed, errno: " << cqe->res
                         << ", group: " << task_group_->group_id_
                         << ", socket: " << *sock;
                 free_reg_fd_idx_.emplace_back(sock->reg_fd_idx_);
                 sock->reg_fd_idx_ = -1;
-                auto it = reg_fds_.find(sock->fd());
-                CHECK(it != reg_fds_.end());
-                it->second = -1;
             }
-            SubmitRecv(sock);
+            int ret = SubmitRecv(sock);
+            if (ret == 0) {
+                reg_fds_.try_emplace(sock->fd(), sock->reg_fd_idx_);
+                sock->bound_g_ = task_group_;
+                register_data->Notify(true);
+            } else {
+                // SubmitRecv fails, no sqe available. Unregister the sock.
+                if (sock->reg_fd_idx_ != -1) {
+                    free_reg_fd_idx_.emplace_back(sock->reg_fd_idx_);
+                    sock->reg_fd_idx_ = -1;
+                }
+                sock->bound_g_ = nullptr;
+                register_data->Notify(false);
+            }
             break;
         }
         case OpCode::FixedWrite:

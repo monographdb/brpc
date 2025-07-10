@@ -64,8 +64,32 @@ struct RingFsyncData {
     }
 };
 
-struct SocketUnRegisterArg {
+struct SocketRegisterData {
+    brpc::Socket *sock_;
+    bthread::Mutex mutex_;
+    bthread::ConditionVariable cv_;
+    bool finish_{false};
+    bool success_{false};
+
+    bool Wait() {
+        std::unique_lock lk(mutex_);
+        while (!finish_) {
+            cv_.wait(lk);
+        }
+        return success_;
+    }
+
+    void Notify(bool success) {
+        std::unique_lock lk(mutex_);
+        finish_ = true;
+        success_ = success;
+        cv_.notify_one();
+    }
+};
+
+struct SocketUnRegisterData {
     int fd_;
+    int32_t fd_idx_;
     bthread::Mutex mutex_;
     bthread::ConditionVariable cv_;
     bool finish_{false};
@@ -76,6 +100,7 @@ struct SocketUnRegisterArg {
         while (!finish_) {
             cv_.wait(lk);
         }
+
         return res_;
     }
 
@@ -108,7 +133,11 @@ public:
         }
     }
 
-    int Register(brpc::Socket *sock);
+    int Register(SocketRegisterData *data);
+
+    int Unregister(SocketUnRegisterData *data) {
+        return SubmitCancel(data);
+    }
 
     int SubmitRecv(brpc::Socket *sock);
 
@@ -130,11 +159,6 @@ public:
     }
 
     int SubmitAll();
-
-    int Unregister(int fd) {
-        // TODO(zkl): should wait for the cancel cqe?
-        return SubmitCancel(fd);
-    }
 
     void PollAndNotify();
 
@@ -161,9 +185,8 @@ private:
         }
     }
 
-    int SubmitCancel(int fd);
-
-    int SubmitRegisterFile(brpc::Socket *sock, int *fd, int32_t fd_idx);
+    int SubmitRegisterFile(SocketRegisterData *register_data, int *fd, int32_t fd_idx);
+    int SubmitCancel(SocketUnRegisterData *unregister_data);
 
     void HandleCqe(io_uring_cqe *cqe);
 

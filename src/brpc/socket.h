@@ -641,6 +641,7 @@ public:
     void NotifyWaitingNonFixedWrite(int nw);
     int CopyDataRead();
     void ClearInboundBuf();
+    bool RecycleInBackgroundIfNecessary();
 #endif
 private:
     DISALLOW_COPY_AND_ASSIGN(Socket);
@@ -720,6 +721,7 @@ friend void DereferenceSocket(Socket*);
     static void *SocketProcess(void *);
     static void *SocketRegister(void *);
     static void *SocketUnRegister(void *);
+    static void *SocketRecycle(void *);
 #endif
 
     static void* KeepWrite(void*);
