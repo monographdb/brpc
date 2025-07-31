@@ -1212,20 +1212,23 @@ void print_task(std::ostream& os, bthread_t tid) {
 }
 
 void TaskGroup::Notify() {
-    if (_waiting.load(std::memory_order_relaxed)) {
+    if (_waiting.load(std::memory_order_relaxed) && !_notified.load(std::memory_order_acquire)) {
         std::unique_lock<std::mutex> lk(_mux);
+        // modifications of _notified is protected by _mux.
+        _notified.store(true, std::memory_order_release);
         _cv.notify_one();
     }
 }
 
-// TODO(zkl): keep notify signal and store it so that there won't be lots of lock acquiresation
 bool TaskGroup::NotifyIfWaiting() {
-    if (!_waiting.load(std::memory_order_relaxed)) {
-        return false;
+    if (_waiting.load(std::memory_order_relaxed) && !_notified.load(std::memory_order_acquire)) {
+        std::unique_lock<std::mutex> lk(_mux);
+        // modifications of _notified is protected by _mux.
+        _notified.store(true, std::memory_order_release);
+        _cv.notify_one();
+        return true;
     }
-    std::unique_lock<std::mutex> lk(_mux);
-    _cv.notify_one();
-    return true;
+    return false;
 }
 
 bool TaskGroup::Wait(){
@@ -1233,7 +1236,12 @@ bool TaskGroup::Wait(){
     _waiting_workers.fetch_add(1, std::memory_order_relaxed);
 
     std::unique_lock<std::mutex> lk(_mux);
+    // Before waiting and sleeping, reset the _notified status.
+    // All modifications of _notified is protected by _mux.
+    _notified.store(false, std::memory_order_release);
     _cv.wait(lk, [this]()->bool {
+        // Clear the _notified status every time the worker wakes up.
+        _notified.store(false, std::memory_order_release);
         // No need to check _rq since _rq can only be pushed by itself.
         if (!_remote_rq.empty() || !_bound_rq.empty()) {
             return true;
