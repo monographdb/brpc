@@ -1212,20 +1212,26 @@ void print_task(std::ostream& os, bthread_t tid) {
 }
 
 void TaskGroup::Notify() {
-    if (_waiting.load(std::memory_order_relaxed) && !_notified.load(std::memory_order_acquire)) {
-        std::unique_lock<std::mutex> lk(_mux);
-        // modifications of _notified is protected by _mux.
-        _notified.store(true, std::memory_order_release);
-        _cv.notify_one();
+    if (_waiting.load(std::memory_order_relaxed)) {
+        bool expect = false;
+        // Only one caller gets the right to notify the worker.
+        if (_notified.compare_exchange_strong(expect, true)) {
+            std::unique_lock<std::mutex> lk(_mux);
+            _notified.store(true, std::memory_order_release);
+            _cv.notify_one();
+        }
     }
 }
 
 bool TaskGroup::NotifyIfWaiting() {
-    if (_waiting.load(std::memory_order_relaxed) && !_notified.load(std::memory_order_acquire)) {
-        std::unique_lock<std::mutex> lk(_mux);
-        // modifications of _notified is protected by _mux.
-        _notified.store(true, std::memory_order_release);
-        _cv.notify_one();
+    if (_waiting.load(std::memory_order_relaxed)) {
+        bool expect = false;
+        // Only one caller gets the right to notify the worker.
+        if (_notified.compare_exchange_strong(expect, true)) {
+            std::unique_lock<std::mutex> lk(_mux);
+            _notified.store(true, std::memory_order_release);
+            _cv.notify_one();
+        }
         return true;
     }
     return false;
@@ -1237,7 +1243,6 @@ bool TaskGroup::Wait(){
 
     std::unique_lock<std::mutex> lk(_mux);
     // Before waiting and sleeping, reset the _notified status.
-    // All modifications of _notified is protected by _mux.
     _notified.store(false, std::memory_order_release);
     _cv.wait(lk, [this]()->bool {
         // Clear the _notified status every time the worker wakes up.
